@@ -1,0 +1,23 @@
+# HYDRA mk4 — training extras (Colab / GPU box).
+# Install with:
+#   pip install -r requirements-base.txt -r requirements-train.txt
+# ============================================================================
+
+-r requirements-base.txt
+
+# --- Training observability / utilities ---
+tqdm>=4.66.0
+matplotlib>=3.8.0              # for eval/diagnostic plots
+tensorboard>=2.15.0            # optional: torch.utils.tensorboard logging
+
+# --- Notebook (Colab already provides these, but pin for reproducibility) ---
+ipykernel>=6.29.0
+
+# --- mk4.4: gradient-boosted trees + ONNX exporters for them ---
+# XGBoost is typically a better fit than MLP for tabular financial data
+# (200-dim, 500K-1.4M samples) and produces calibrated probabilities,
+# so CONF_THRESHOLD actually filters by quality rather than saturation.
+xgboost>=2.0.0
+onnxmltools>=1.12.0
+skl2onnx>=1.16.0          # mk4.7: explicit (XGB ONNX export needs FloatTensorType)
+scikit-learn>=1.3.0

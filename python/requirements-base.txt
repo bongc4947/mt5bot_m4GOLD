@@ -1,0 +1,32 @@
+# HYDRA mk4.2 — base dependencies
+# Cross-platform; safe to install on Linux/macOS/Colab/Kaggle.
+# Use this set when you only need feature engineering, training, or
+# backtesting — no Python sidecar workers exist anymore in mk4.2.
+# For live trading add requirements-live.txt (Windows-only; pulls
+# MetaTrader5 — used only by extract_data.py to pull bars).
+# ============================================================================
+
+# --- Core scientific stack ---
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+scipy>=1.11.0
+psutil>=5.9.0
+requests>=2.31.0
+
+# --- PyTorch (CPU baseline; GPU users override per-platform) ---
+# GPU install (Linux/Windows, CUDA 12.1):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# GPU install (Linux/Windows, CUDA 11.8):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0,<3.0.0
+torchvision>=0.15.0
+
+# --- ONNX export + inference ---
+onnx>=1.15.0
+onnxruntime>=1.17.0
+onnxscript>=0.1.0              # required by torch.onnx dynamo exporter (torch>=2.1)
+
+# --- Deep historical bar fetch (yfinance / Stooq fallbacks for symbols MT5
+#     doesn't quote far enough back; not used at runtime, only for training data)
+yfinance>=0.2.36

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Data — shared with sibling mk4 project, do not commit
+data/parquet/*.parquet
+data/ticks/*.parquet
+data/logs/
+data/feature_cache/
+data/macro/
+data/*.zip
+
+# Training artifacts — regenerable
+onnx_out/*.onnx
+onnx_out/*.json
+
+# Logs
+*.log
+hydra_*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# MT5 build artifacts
+ea/*.ex5
+
+# Progress
+progress.json

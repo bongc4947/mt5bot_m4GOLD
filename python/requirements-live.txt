@@ -1,0 +1,13 @@
+# HYDRA mk4 — live trading extras (Windows only; requires MT5 terminal).
+# Install with:
+#   pip install -r requirements-base.txt -r requirements-live.txt
+# ============================================================================
+
+-r requirements-base.txt
+
+# --- MT5 connectivity (Windows-only) ---
+MetaTrader5>=5.0.45 ; sys_platform == "win32"
+
+# --- Live dashboard (TUI) ---
+rich>=13.7.0
+prompt_toolkit>=3.0.43

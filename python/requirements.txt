@@ -1,0 +1,13 @@
+# HYDRA mk4 — meta-requirements file (kept for backwards compatibility).
+# For new installs prefer the split files:
+#   pip install -r requirements-base.txt   # core (cross-platform, training-capable)
+#   pip install -r requirements-train.txt  # base + training extras (Colab)
+#   pip install -r requirements-live.txt   # base + live trading (Windows only)
+# ============================================================================
+
+-r requirements-base.txt
+-r requirements-train.txt
+# Live extras — guarded so non-Windows installs don't fail on MetaTrader5
+MetaTrader5>=5.0.45 ; sys_platform == "win32"
+rich>=13.7.0
+prompt_toolkit>=3.0.43
