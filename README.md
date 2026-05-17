@@ -59,6 +59,35 @@ Or directly from a notebook (Kaggle/Colab/RunPod): see `cloud/README.md` and `cl
 
 The same `runner.sh` works on every cloud target — Kaggle's free-tier T4, RunPod 4090s, vast.ai A100s, Lambda H100s. Hardware detection picks the appropriate batch size every time.
 
+## AURUM — the v2 AI stack
+
+`MT5bot_m4Gold` ships a second, research-grade AI layer called **AURUM**
+(see [docs/DESIGN_AURUM.md](docs/DESIGN_AURUM.md)): a multi-timeframe
+patch-transformer with self-supervised pretraining, a meta-label gate,
+conformal-calibrated confidence, and quantile-Kelly sizing.
+
+```powershell
+.\train.bat aurum         # baseline -> pretrain -> finetune -> meta -> conformal -> export
+```
+
+Or phase by phase:
+
+```powershell
+python python\train_aurum.py baseline     # Phase 1 - purged-CV controls (DLinear, XGBoost)
+python python\train_aurum.py pretrain     # Phase 2 - self-supervised encoders
+python python\train_aurum.py finetune     # Phase 2-3 - backbone + multi-task heads
+python python\train_aurum.py meta         # Phase 4 - meta-label gate
+python python\train_aurum.py conformal    # Phase 4 - conformal calibration
+python python\train_aurum.py export       # ONNX bundle + spec
+```
+
+AURUM deploys via `ea/MT5bot_m4Gold_AURUM.mq5`. It only goes live if it
+beats the DLinear + XGBoost baselines on purged cross-validation — the
+`export` step writes `deploy: true/false` into the spec accordingly.
+
+The legacy H1/H4/H5/H6 stack (`train.bat strategies`) stays as-is until
+AURUM clears its gate; both can run side by side on different magic bases.
+
 ## Data
 
 By default, training reads parquet files from `data/`. If the directory is empty (e.g. a fresh clone), `python/config.py` falls back to the sibling `MT5_bot_mk4/data/` folder so a single shared 30 GB dataset serves both projects.

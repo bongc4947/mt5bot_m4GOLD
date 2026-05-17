@@ -17,6 +17,9 @@ data/*.zip
 # Training artifacts — regenerable
 onnx_out/*.onnx
 onnx_out/*.json
+onnx_out/*.pt
+aurum_ssl_encoder_*.pt
+aurum_net.pt
 
 # Logs
 *.log

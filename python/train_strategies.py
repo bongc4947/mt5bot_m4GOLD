@@ -192,6 +192,22 @@ def _kwargs_to_cli(strategy_key: str, kwargs: dict) -> list[str]:
     return cli
 
 
+def _subprocess_timeout_seconds(strategy_key: str) -> int:
+    # Per-strategy timeout. H1 chews on every tick in the file (1.06 GB
+    # GOLD = 173M ticks -> ~17 min just to aggregate before any training)
+    # so it needs a much longer ceiling than the rule-based strategies.
+    # Env override: M4GOLD_<KEY>_TIMEOUT_MIN (e.g. M4GOLD_H1_TIMEOUT_MIN=180).
+    defaults_min = {"H1": 120, "H4": 30, "H5": 30, "H6": 30}
+    env_key = f"M4GOLD_{strategy_key}_TIMEOUT_MIN"
+    raw = os.environ.get(env_key)
+    if raw:
+        try:
+            return int(float(raw) * 60)
+        except ValueError:
+            log.warning("ignoring %s=%r (not a number)", env_key, raw)
+    return defaults_min.get(strategy_key, 30) * 60
+
+
 def _run_subprocess(strategy_key: str, symbol: str, kwargs: dict) -> dict:
     """
     Spawn a fresh `python <script>.py SYMBOL <flags>` per (strategy, symbol).
@@ -201,22 +217,22 @@ def _run_subprocess(strategy_key: str, symbol: str, kwargs: dict) -> dict:
     behaviour. The parent stays a lightweight orchestrator. After the
     subprocess writes its meta/spec JSON to onnx_out/, we load + return it.
 
-    This replaces ProcessPoolExecutor for the workers=1 path because
-    ProcessPoolExecutor.max_tasks_per_child=1 wasn't sufficient to prevent
-    the 15:30 UTC Kaggle BrokenProcessPool after the 4th sequential H1
-    symbol — the executor parent itself accumulated state.
+    Per-strategy timeout — H1's tick-bar pipeline can take well over the
+    legacy 30-min cap on a 1+ GB tick file; see _subprocess_timeout_seconds.
     """
     from config import ONNX_OUTPUT_DIR
     repo_root = Path(__file__).parent.parent
     script = repo_root / "python" / SCRIPT_FOR[strategy_key]
     cli = _kwargs_to_cli(strategy_key, kwargs)
     cmd = [sys.executable, "-u", str(script), symbol, *cli]
-    log.info("[%s:%s] subprocess: %s", strategy_key, symbol,
+    timeout_s = _subprocess_timeout_seconds(strategy_key)
+    log.info("[%s:%s] subprocess (timeout=%d min): %s",
+             strategy_key, symbol, timeout_s // 60,
              " ".join(c for c in cmd if "/" not in c and "\\" not in c)
              or "python ...")
     # Stream the child's stdout to the parent live; don't capture so the
     # user sees per-symbol progress in real time.
-    proc = subprocess.run(cmd, timeout=30 * 60, check=False)
+    proc = subprocess.run(cmd, timeout=timeout_s, check=False)
     meta_name = META_FILENAME_FMT[strategy_key].format(sym=symbol)
     meta_path = ONNX_OUTPUT_DIR / meta_name
     if not meta_path.exists():
@@ -315,7 +331,7 @@ def _run_one(strategy_key: str, symbols: list[str], extra_args: dict,
         log.warning("ProcessPoolExecutor lacks max_tasks_per_child; "
                      "memory accumulation possible across symbols.")
         ex = ProcessPoolExecutor(max_workers=max_w, mp_context=ctx)
-    WORKER_TIMEOUT = 30 * 60
+    WORKER_TIMEOUT = _subprocess_timeout_seconds(strategy_key)
     with ex:
         futures = {ex.submit(_worker_train, strategy_key, sym, worker_args): sym
                    for sym in symbols}
@@ -447,8 +463,10 @@ def main(argv=None) -> int:
     # H1 knobs
     p.add_argument("--h1-ticks-per-bar", type=int, default=100)
     p.add_argument("--h1-horizon",       type=int, default=10)
-    p.add_argument("--h1-max-tick-file-gb", type=float, default=1.0,
-                   help="skip H1 for tick files larger than this (Kaggle: 1.0)")
+    p.add_argument("--h1-max-tick-file-gb", type=float, default=8.0,
+                   help="skip H1 for tick files larger than this. Default 8.0 "
+                        "fits any modern desktop / RunPod / Lambda; set to 1.0 "
+                        "on Kaggle's free tier to pre-empt the 30 GB RAM OOM.")
     # H5 knobs
     p.add_argument("--h5-pullback-k", type=float, default=1.0)
     p.add_argument("--h5-sl-atr",     type=float, default=0.7)

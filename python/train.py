@@ -66,17 +66,9 @@ def cmd_gold(args: argparse.Namespace) -> int:
     hw = get_hw()
     print(f"[m4Gold] hardware: {hw}")
 
-    create_fn = _load_factory("models.exec_net", "create_exec_net")  # placeholder
-    # The actual direction head used by _train_agent.run_agent is the one
-    # passed in `create_dir_fn`. We re-purpose the GNN factory because it
-    # is the single-node variant in METALS_SYMBOLS; here we fall back to a
-    # lightweight directional MLP if the GNN module is unavailable.
-    try:
-        create_fn = _load_factory("models.gnn_metals", "create_gnn")
-    except ModuleNotFoundError:
-        # gnn_metals pruned in m4Gold; use a single-symbol direction MLP.
-        from models.exec_net import create_exec_net as _ce
-        create_fn = _ce
+    # Single-symbol GOLD direction MLP. 200-dim input -> [B, 1] logit.
+    # The trainer applies BCEWithLogits inside train_direction().
+    create_fn = _load_factory("models.direction_net", "create_direction_net")
 
     results = run_agent(
         agent="GOLD",

@@ -17,7 +17,7 @@ Pipeline:
   5. Train XGBoost binary classifier with temperature calibration.
   6. Skill gate: net-of-cost model_PF >= passive max + 0.10
                  AND model_PF >= 1.20 AND N_trades >= 30.
-  7. ONNX export -> HYDRA4_H1OF_<SYM>.onnx.
+  7. ONNX export -> M4GOLD_H1OF_<SYM>.onnx.
 
 Usage:
     python python/train_h1_orderflow.py EURUSD
@@ -219,7 +219,7 @@ def train_one_symbol(symbol: str, *,
                 "tick_file_gb": size_gb,
                 "max_tick_file_gb": max_tick_file_gb,
             }
-            (ONNX_OUTPUT_DIR / f"HYDRA4_H1OF_{symbol}_meta.json").write_text(
+            (ONNX_OUTPUT_DIR / f"M4GOLD_H1OF_{symbol}_meta.json").write_text(
                 json.dumps(meta, indent=2))
             return meta
     ticks = load_ticks(symbol)
@@ -322,7 +322,7 @@ def train_one_symbol(symbol: str, *,
              symbol, best_dir, best_thr, best["pf"], best["wr"],
              best["n_trades"], best["excess_vs_passive"])
 
-    onnx_path = ONNX_OUTPUT_DIR / f"HYDRA4_H1OF_{symbol}.onnx"
+    onnx_path = ONNX_OUTPUT_DIR / f"M4GOLD_H1OF_{symbol}.onnx"
     onnx_ok = export_xgb_onnx(model, H1_FEATURE_DIM, onnx_path) \
               if best["deploy"] else False
     if not best["deploy"] and onnx_path.exists():
@@ -352,7 +352,7 @@ def train_one_symbol(symbol: str, *,
         "results_by_threshold":         {str(k): v for k, v in results.items()},
         "results_inverted_by_threshold": {str(k): v for k, v in results_inv.items()},
     }
-    (ONNX_OUTPUT_DIR / f"HYDRA4_H1OF_{symbol}_meta.json").write_text(
+    (ONNX_OUTPUT_DIR / f"M4GOLD_H1OF_{symbol}_meta.json").write_text(
         json.dumps(meta, indent=2))
     log.info("[H1:%s] FINAL  dir=%s  thr=%.2f  PF=%.3f  excess=%+.3f  deploy=%s",
              symbol, best_dir, best_thr, best["pf"],

@@ -29,7 +29,7 @@ set -euo pipefail
 : "${OUT_DIR:=${PWD}/out}"
 : "${EPOCHS:=60}"
 : "${SEED:=42}"
-: "${TRAIN_MODE:=both}"        # strategies | ai | both
+: "${TRAIN_MODE:=both}"        # strategies | ai | both | aurum
 : "${STRATEGIES:=H1,H4,H5,H6}"
 : "${FORCE_CPU:=0}"
 : "${FORCE_GPU:=0}"
@@ -86,6 +86,12 @@ fi
 if [[ "$TRAIN_MODE" == "ai" || "$TRAIN_MODE" == "both" ]]; then
   echo "[runner] === AI direction head ==="
   python python/train.py gold --epochs "$EPOCHS" --seed "$SEED" --skip-extract
+fi
+
+if [[ "$TRAIN_MODE" == "aurum" ]]; then
+  # AURUM v2 stack — full phased pipeline (see docs/DESIGN_AURUM.md).
+  echo "[runner] === AURUM v2 (baseline -> pretrain -> finetune -> meta -> conformal -> export) ==="
+  python python/train_aurum.py all --epochs "$EPOCHS"
 fi
 
 # ---------------------------------------------------------------------------

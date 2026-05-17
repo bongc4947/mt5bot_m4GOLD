@@ -7,7 +7,11 @@
 # ============================================================================
 
 # --- Core scientific stack ---
-numpy>=1.24.0,<2.0.0
+# numpy: dropped the <2.0.0 cap. Py3.13 has prebuilt wheels for numpy 2.x
+# but NOT for 1.x on Windows, so the cap was forcing a from-source build
+# that fails when the user has no MSVC installed. numpy 2.x is API-compatible
+# with our usage; pandas / scipy / torch all support it.
+numpy>=1.26.0
 pandas>=2.0.0
 pyarrow>=14.0.0
 scipy>=1.11.0

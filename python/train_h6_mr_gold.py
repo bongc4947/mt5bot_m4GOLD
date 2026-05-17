@@ -216,12 +216,19 @@ def main(argv=None) -> int:
                         stream=sys.stdout, force=True)
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # Orchestrator passes SYMBOL positionally for uniform CLI; H6 is GOLD-only
+    # so the arg is accepted-and-validated rather than acted on.
+    p.add_argument("symbol", nargs="?", default=SYMBOL,
+                   help=f"symbol (default {SYMBOL}; H6 is GOLD-only)")
     p.add_argument("--z-window",     type=int,   default=200)
     p.add_argument("--z-in",         type=float, default=2.0)
     p.add_argument("--z-out",        type=float, default=0.5)
     p.add_argument("--z-stop",       type=float, default=3.5)
     p.add_argument("--timeout-bars", type=int,   default=48)
     args = p.parse_args(argv)
+    if args.symbol.upper() != SYMBOL:
+        log.warning("H6 is GOLD-only; got %r — ignoring and training GOLD",
+                    args.symbol)
     t0 = time.time()
     train(z_window=args.z_window, z_in=args.z_in, z_out=args.z_out,
           z_stop=args.z_stop, timeout_bars=args.timeout_bars)

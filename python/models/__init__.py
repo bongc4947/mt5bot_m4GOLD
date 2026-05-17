@@ -2,6 +2,7 @@
 # Direction / execution / modify / scalp / hedge nets + XGBoost head.
 # PRISM / APEX / CE_NET / GNN_METALS removed (multi-symbol-only architectures).
 
+from .direction_net import DirectionNet, create_direction_net
 from .exec_net import ExecNet, create_exec_net
 from .modify_net import ModifyNet, create_modify_net
 from .scalp_net import ScalpNet, create_scalp_net

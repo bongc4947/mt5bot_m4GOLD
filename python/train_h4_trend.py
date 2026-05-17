@@ -21,7 +21,7 @@ Pipeline (rule-only — no ML required if Sharpe gate passes):
        val_Sharpe >= 0.6 AND val_MaxDD <= 0.30 AND val_PF >= 1.10
      If both rules clear the gate, pick the higher val_Sharpe.
   5. No ONNX needed — rule is deterministic and small enough to embed in
-     the EA directly. Emit HYDRA4_H4TREND_<SYM>_spec.json with the chosen
+     the EA directly. Emit M4GOLD_H4TREND_<SYM>_spec.json with the chosen
      parameters; the MQL5 TrendRule.mqh reads them at attach time.
 
 Usage:
@@ -325,7 +325,7 @@ def train_one_symbol(symbol: str, *,
         "walk_forward":     wf,
         "summary":          summary,
     }
-    out_path = ONNX_OUTPUT_DIR / f"HYDRA4_H4TREND_{symbol}_spec.json"
+    out_path = ONNX_OUTPUT_DIR / f"M4GOLD_H4TREND_{symbol}_spec.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(spec, indent=2, default=float))
     log.info("[H4:%s] FINAL  best_rule=%s  val_Sharpe=%.2f  val_MDD=%.1f%%  "

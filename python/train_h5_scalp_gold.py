@@ -283,7 +283,7 @@ def train_one(symbol: str = SYMBOL, *,
         "deploy":            bool(ok),
         "deploy_unstable":   bool(deploy_unstable),
     }
-    out = ONNX_OUTPUT_DIR / f"HYDRA4_H5SCALP_{SYMBOL}_spec.json"
+    out = ONNX_OUTPUT_DIR / f"M4GOLD_H5SCALP_{SYMBOL}_spec.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(spec, indent=2))
     log.info("[H5:%s] FINAL  val_PF=%.3f  WF=%.2f  -> %s",
@@ -298,6 +298,11 @@ def main(argv=None) -> int:
                         stream=sys.stdout, force=True)
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # The master orchestrator (train_strategies.py) passes SYMBOL positionally
+    # so every per-strategy trainer has a uniform CLI. H5 is GOLD-only but we
+    # still accept the arg and validate inside train_one().
+    p.add_argument("symbol", nargs="?", default=SYMBOL,
+                   help=f"symbol (default {SYMBOL}; H5 is GOLD-only)")
     p.add_argument("--pullback-k", type=float, default=1.0,
                    help="entry trigger: low <= MA - k*ATR (long), inverse for short")
     p.add_argument("--ma-window",  type=int,   default=20)
@@ -308,7 +313,7 @@ def main(argv=None) -> int:
     p.add_argument("--h4-slow",    type=int,   default=200)
     args = p.parse_args(argv)
     t0 = time.time()
-    train_one(SYMBOL,
+    train_one(args.symbol,
               h4_fast=args.h4_fast, h4_slow=args.h4_slow,
               pullback_k=args.pullback_k, ma_window=args.ma_window,
               sl_atr=args.sl_atr, tp_atr=args.tp_atr,
