@@ -23,7 +23,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-: "${REPO_URL:=}"
+: "${REPO_URL:=https://github.com/bongc4947/mt5bot_m4GOLD.git}"
 : "${REPO_BRANCH:=master}"
 : "${REPO_DIR:=${PWD}/MT5bot_m4Gold}"
 : "${OUT_DIR:=${PWD}/out}"

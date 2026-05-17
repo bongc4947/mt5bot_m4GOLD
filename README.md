@@ -55,7 +55,13 @@ cd MT5bot_m4Gold
 bash cloud/runner.sh
 ```
 
-Or directly from a notebook (Kaggle/Colab/RunPod): see `cloud/README.md` and `cloud/notebook_run.py`.
+**Kaggle one-cell run** (recommended for the AURUM stack): paste
+`cloud/kaggle/run.py` into a single notebook cell. Enable GPU + Internet,
+attach the `hydra4-tick-data-bundle` dataset (auto-detected from
+`/kaggle/input/`), and run. It clones, installs, runs the full AURUM
+pipeline, and leaves the ONNX bundle in `onnx_out/`.
+
+Other notebooks (Colab/RunPod): see `cloud/README.md` and `cloud/notebook_run.py`.
 
 The same `runner.sh` works on every cloud target — Kaggle's free-tier T4, RunPod 4090s, vast.ai A100s, Lambda H100s. Hardware detection picks the appropriate batch size every time.
 

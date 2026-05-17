@@ -39,20 +39,65 @@ HYDRA_MAGIC = 20260513
 BASE_DIR = Path(__file__).parent.parent
 PYTHON_DIR = BASE_DIR / "python"
 MODELS_DIR = PYTHON_DIR / "models"
-DATA_DIR = Path(os.environ.get("M4GOLD_DATA_DIR", BASE_DIR / "data"))
-PARQUET_DIR = DATA_DIR / "parquet"
-TICKS_DIR = DATA_DIR / "ticks"
-LOGS_DIR = DATA_DIR / "logs"
 ONNX_LOCAL_DIR = BASE_DIR / "onnx_out"
 
-# Allow pointing back at the parent mk4 data folder when running locally so
-# we don't duplicate 30 GB of parquets. Set M4GOLD_DATA_DIR to override.
-_MK4_FALLBACK = BASE_DIR.parent / "MT5_bot_mk4" / "data"
-if not (PARQUET_DIR.exists() and any(PARQUET_DIR.glob("*.parquet"))) and _MK4_FALLBACK.exists():
-    DATA_DIR = _MK4_FALLBACK
-    PARQUET_DIR = DATA_DIR / "parquet"
-    TICKS_DIR = DATA_DIR / "ticks"
-    LOGS_DIR = DATA_DIR / "logs"
+
+def _resolve_data_dirs() -> tuple[Path, Path, Path]:
+    """
+    Resolve (TICKS_DIR, PARQUET_DIR, LOGS_DIR).
+
+    TICKS_DIR holds the raw HYDRA4_TICKS_<SYM>.parquet files and may be
+    read-only (a Kaggle input mount). PARQUET_DIR / LOGS_DIR must be
+    writable — derived bar caches and logs land there. The two are
+    decoupled so a read-only tick dataset still works.
+
+    Priority:
+      1. M4GOLD_TICKS_DIR (+ optional M4GOLD_DATA_DIR for the writable side)
+      2. Kaggle — a /kaggle/input/* dataset holding HYDRA4_TICKS_GOLD.parquet;
+         derived bars cached under /kaggle/working/m4gold_data.
+      3. Local — BASE_DIR/data, else the sibling MT5_bot_mk4/data tree.
+    """
+    env_work = os.environ.get("M4GOLD_DATA_DIR")
+    work = Path(env_work) if env_work else None
+
+    # 1. explicit tick dir override
+    env_ticks = os.environ.get("M4GOLD_TICKS_DIR")
+    if env_ticks and Path(env_ticks).exists():
+        wd = work or (BASE_DIR / "data")
+        return Path(env_ticks), wd / "parquet", wd / "logs"
+
+    # 2. Kaggle input mount — files are flat in the dataset dir.
+    kin = Path("/kaggle/input")
+    if kin.exists():
+        for sub in sorted(p for p in kin.iterdir() if p.is_dir()):
+            if (sub / "HYDRA4_TICKS_GOLD.parquet").exists():
+                ticks = sub
+            elif (sub / "ticks" / "HYDRA4_TICKS_GOLD.parquet").exists():
+                ticks = sub / "ticks"
+            else:
+                continue
+            wd = work or Path("/kaggle/working/m4gold_data")
+            return ticks, wd / "parquet", wd / "logs"
+
+    # 3. local — only if the dirs actually hold parquet files (empty
+    #    placeholder dirs created at clone time must not win over mk4).
+    local = work or (BASE_DIR / "data")
+
+    def _has_parquet(d: Path) -> bool:
+        return d.exists() and next(d.glob("*.parquet"), None) is not None
+
+    if _has_parquet(local / "ticks") or _has_parquet(local / "parquet"):
+        return local / "ticks", local / "parquet", local / "logs"
+    mk4 = BASE_DIR.parent / "MT5_bot_mk4" / "data"
+    if mk4.exists():
+        # reuse mk4's tick + prebuilt-bar parquets; cache new derivatives
+        # locally so we never write into the sibling repo.
+        return mk4 / "ticks", mk4 / "parquet", BASE_DIR / "data" / "logs"
+    return local / "ticks", local / "parquet", local / "logs"
+
+
+TICKS_DIR, PARQUET_DIR, LOGS_DIR = _resolve_data_dirs()
+DATA_DIR = PARQUET_DIR.parent
 
 
 # ---------------------------------------------------------------------------

@@ -46,23 +46,39 @@ _TF_M5_MULT = {"M5": 1, "M15": 3, "H1": 12}
 # Loading
 # ---------------------------------------------------------------------------
 def _load_m5_bars() -> pd.DataFrame:
-    """Load the GOLD M5 bar series from whatever parquet is on disk."""
-    from config import PARQUET_DIR
+    """
+    Load the GOLD M5 bar series.
+
+    Prefers a prebuilt M5 parquet; if none exists (e.g. a fresh Kaggle run
+    where only raw ticks are mounted), builds M5 bars from the GOLD tick
+    parquet via strategies_common.load_or_build_bars — which caches the
+    result so subsequent AURUM phases reuse it.
+    """
+    from config import PARQUET_DIR, TICKS_DIR
     candidates = [
         "HYDRA4_5MFROMTICKS_GOLD.parquet",
         "HYDRA4_M5FROMTICKS_GOLD.parquet",
         "HYDRA4_TBARS_GOLD_100tpb.parquet",   # tick-bars — acceptable fallback
     ]
+    df = None
     for name in candidates:
         p = PARQUET_DIR / name
         if p.exists():
             df = pd.read_parquet(p)
             log.info("[datamodule] loaded %s  (%d bars)", name, len(df))
             break
-    else:
-        raise FileNotFoundError(
-            f"No GOLD M5 parquet found in {PARQUET_DIR}. Tried {candidates}. "
-            f"Run python/extract_data.py GOLD or set M4GOLD_DATA_DIR.")
+    if df is None:
+        # No prebuilt bars — resample from raw GOLD ticks.
+        from strategies_common import load_or_build_bars
+        log.info("[datamodule] no M5 parquet in %s — building M5 bars from "
+                 "GOLD ticks (%s) ...", PARQUET_DIR, TICKS_DIR)
+        df = load_or_build_bars("GOLD", "5min")
+        if df is None:
+            raise FileNotFoundError(
+                f"No GOLD M5 parquet in {PARQUET_DIR} and no GOLD tick "
+                f"parquet in {TICKS_DIR}. Add the tick dataset or set "
+                f"M4GOLD_TICKS_DIR.")
+        log.info("[datamodule] built %d M5 bars from ticks", len(df))
     df = df.rename(columns={"tick_volume": "volume"})
     if "volume" not in df.columns and "real_volume" in df.columns:
         df = df.rename(columns={"real_volume": "volume"})

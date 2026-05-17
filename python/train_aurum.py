@@ -388,6 +388,14 @@ def cmd_all(args) -> int:
     for fn in (cmd_baseline, cmd_pretrain, cmd_finetune, cmd_meta,
                cmd_conformal, cmd_export):
         rc = fn(args)
+        # Release CUDA cache between phases so the next stage starts with a
+        # clean allocator — long single-process pipelines otherwise fragment.
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         if rc != 0:
             log.error("[all] %s returned %d — stopping", fn.__name__, rc)
             return rc
