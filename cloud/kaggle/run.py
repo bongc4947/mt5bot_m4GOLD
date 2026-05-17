@@ -27,10 +27,16 @@ import sys
 
 REPO_URL = "https://github.com/bongc4947/mt5bot_m4GOLD.git"
 REPO_DIR = "/kaggle/working/MT5bot_m4Gold"
-# 20 epochs completes comfortably inside one Kaggle GPU session on a first
-# run. Raise it (set the EPOCHS env var) once you've confirmed the pipeline
-# runs end-to-end and you have session quota to spare.
-EPOCHS = int(os.environ.get("EPOCHS", "20"))
+# First-run defaults are deliberately conservative so the full AURUM
+# pipeline (baseline -> SSL pretrain -> finetune -> meta -> conformal ->
+# export) completes comfortably inside ONE Kaggle GPU session.
+#   EPOCHS    — SSL + fine-tune epoch count
+#   MAX_BARS  — cap on M5 bars used (most-recent N); bounds every phase
+# Once you've confirmed a clean end-to-end run, raise EPOCHS (e.g. 40-60)
+# and MAX_BARS (e.g. 0 = use all history) via the notebook's env or by
+# editing these two lines.
+EPOCHS = int(os.environ.get("EPOCHS", "12"))
+MAX_BARS = int(os.environ.get("MAX_BARS", "90000"))
 
 
 def sh(cmd: str, cwd: str | None = None) -> None:
@@ -57,8 +63,9 @@ def main() -> int:
 
     # 4. full AURUM pipeline (--use-gpu accelerates the XGBoost baseline +
     #    meta gate; the torch parts auto-detect CUDA via hardware_detector)
+    maxbars = f"--max-bars {MAX_BARS}" if MAX_BARS > 0 else ""
     sh(f"{sys.executable} python/train_aurum.py all "
-       f"--epochs {EPOCHS} --use-gpu --batch-size 256",
+       f"--epochs {EPOCHS} --use-gpu --batch-size 256 {maxbars}".strip(),
        cwd=REPO_DIR)
 
     # 5. surface the artifacts
