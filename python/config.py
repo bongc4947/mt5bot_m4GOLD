@@ -66,18 +66,17 @@ def _resolve_data_dirs() -> tuple[Path, Path, Path]:
         wd = work or (BASE_DIR / "data")
         return Path(env_ticks), wd / "parquet", wd / "logs"
 
-    # 2. Kaggle input mount — files are flat in the dataset dir.
+    # 2. Kaggle input mount — search recursively so the dataset's internal
+    #    folder layout and slug name are never assumed. Match a raw GOLD
+    #    tick file or a prebuilt GOLD M5 bar file, whichever turns up.
     kin = Path("/kaggle/input")
     if kin.exists():
-        for sub in sorted(p for p in kin.iterdir() if p.is_dir()):
-            if (sub / "HYDRA4_TICKS_GOLD.parquet").exists():
-                ticks = sub
-            elif (sub / "ticks" / "HYDRA4_TICKS_GOLD.parquet").exists():
-                ticks = sub / "ticks"
-            else:
-                continue
+        hit = (next(kin.rglob("HYDRA4_TICKS_GOLD.parquet"), None)
+               or next(kin.rglob("HYDRA4_5MFROMTICKS_GOLD.parquet"), None)
+               or next(kin.rglob("HYDRA4_M5FROMTICKS_GOLD.parquet"), None))
+        if hit is not None:
             wd = work or Path("/kaggle/working/m4gold_data")
-            return ticks, wd / "parquet", wd / "logs"
+            return hit.parent, wd / "parquet", wd / "logs"
 
     # 3. local — only if the dirs actually hold parquet files (empty
     #    placeholder dirs created at clone time must not win over mk4).

@@ -59,10 +59,18 @@ def main() -> int:
     sh(f"{sys.executable} -m pip install -q -r python/requirements-train.txt",
        cwd=REPO_DIR)
 
-    # 3. confirm the tick dataset is visible
-    sh(f"{sys.executable} -c \"import sys; sys.path.insert(0,'python'); "
-       f"import config; print('TICKS_DIR =', config.TICKS_DIR); "
-       f"print('PARQUET_DIR =', config.PARQUET_DIR)\"", cwd=REPO_DIR)
+    # 3. preflight — confirm the GOLD tick dataset is actually attached
+    preflight = (
+        "import sys, glob; sys.path.insert(0,'python'); "
+        "hits = glob.glob('/kaggle/input/**/HYDRA4_TICKS_GOLD.parquet', recursive=True) "
+        "+ glob.glob('/kaggle/input/**/HYDRA4_5MFROMTICKS_GOLD.parquet', recursive=True); "
+        "print('/kaggle/input contents:', glob.glob('/kaggle/input/*')); "
+        "print('GOLD data found at:', hits); "
+        "import config; print('TICKS_DIR =', config.TICKS_DIR, '| PARQUET_DIR =', config.PARQUET_DIR); "
+        "sys.exit(0 if hits else 'ABORT: no GOLD tick/bar parquet under /kaggle/input "
+        "-- attach the hydra4-tick-data-bundle dataset via Add Input.')"
+    )
+    sh(f'{sys.executable} -c "{preflight}"', cwd=REPO_DIR)
 
     # 4. full AURUM pipeline (--use-gpu accelerates the XGBoost baseline +
     #    meta gate; the torch parts auto-detect CUDA via hardware_detector)

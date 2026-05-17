@@ -60,24 +60,33 @@ def _load_m5_bars() -> pd.DataFrame:
         "HYDRA4_M5FROMTICKS_GOLD.parquet",
         "HYDRA4_TBARS_GOLD_100tpb.parquet",   # tick-bars — acceptable fallback
     ]
+    # Search the writable cache dir AND the (possibly read-only) dataset
+    # dir — a Kaggle dataset may ship prebuilt bars instead of raw ticks.
     df = None
-    for name in candidates:
-        p = PARQUET_DIR / name
-        if p.exists():
-            df = pd.read_parquet(p)
-            log.info("[datamodule] loaded %s  (%d bars)", name, len(df))
+    for d in (PARQUET_DIR, TICKS_DIR):
+        for name in candidates:
+            p = d / name
+            if p.exists():
+                df = pd.read_parquet(p)
+                log.info("[datamodule] loaded %s (%d bars) from %s",
+                         name, len(df), d)
+                break
+        if df is not None:
             break
     if df is None:
-        # No prebuilt bars — resample from raw GOLD ticks.
+        # No prebuilt bars anywhere — resample from raw GOLD ticks.
         from strategies_common import load_or_build_bars
-        log.info("[datamodule] no M5 parquet in %s — building M5 bars from "
-                 "GOLD ticks (%s) ...", PARQUET_DIR, TICKS_DIR)
+        log.info("[datamodule] no M5 parquet — building M5 bars from GOLD "
+                 "ticks in %s ...", TICKS_DIR)
         df = load_or_build_bars("GOLD", "5min")
         if df is None:
             raise FileNotFoundError(
-                f"No GOLD M5 parquet in {PARQUET_DIR} and no GOLD tick "
-                f"parquet in {TICKS_DIR}. Add the tick dataset or set "
-                f"M4GOLD_TICKS_DIR.")
+                f"No GOLD bars or ticks found.\n"
+                f"  searched bar dirs : {PARQUET_DIR} , {TICKS_DIR}\n"
+                f"  expected ticks at : {TICKS_DIR / 'HYDRA4_TICKS_GOLD.parquet'}\n"
+                f"On Kaggle: confirm the tick dataset is ATTACHED to the "
+                f"notebook (Add Input -> your dataset) — it must appear "
+                f"under /kaggle/input/. Otherwise set M4GOLD_TICKS_DIR.")
         log.info("[datamodule] built %d M5 bars from ticks", len(df))
     df = df.rename(columns={"tick_volume": "volume"})
     if "volume" not in df.columns and "real_volume" in df.columns:
