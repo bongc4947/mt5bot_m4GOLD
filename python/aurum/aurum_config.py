@@ -95,8 +95,15 @@ ATR_PERIOD = 14
 # ---------------------------------------------------------------------------
 # Purged cross-validation (cv/purged_kfold.py)
 # ---------------------------------------------------------------------------
-CV_N_SPLITS = 6
+CV_N_SPLITS = 4
 CV_EMBARGO_PCT = 0.01          # embargo gap as fraction of dataset length
+
+# The baseline phase is a CONTROL number, not the final model — it does not
+# need every bar. Cap it so the purged-CV sweep is bounded in wall time
+# regardless of how much GOLD history is on disk (XGBoost on the 2048-dim
+# flat input is the slow part). Most-recent N samples are used.
+BASELINE_MAX_SAMPLES = 120_000
+BASELINE_XGB_ESTIMATORS = 200
 
 # ---------------------------------------------------------------------------
 # Meta-label gate (L4)

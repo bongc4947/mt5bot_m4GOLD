@@ -215,6 +215,26 @@ def _window_for_tf(channels: np.ndarray, lookback: int,
     return out
 
 
+def summary_features(X: dict) -> np.ndarray:
+    """
+    Compact per-(timeframe, channel) summary statistics for the tabular
+    XGBoost baseline. Feeding a gradient-boosted model the full 2048-dim
+    patch-flattened sequence is both pathologically slow and not how a GBM
+    baseline is built — 5 stats per channel is the right tabular view.
+
+    Returns float32[N, 3 timeframes * N_CHANNELS * 5].
+    """
+    feats = []
+    for tf in TIMEFRAMES:
+        a = X[tf]                                  # [N, L, C]
+        feats.append(a.mean(axis=1))               # mean over the window
+        feats.append(a.std(axis=1))                # volatility
+        feats.append(a[:, -1, :])                  # latest bar
+        feats.append(a.max(axis=1))                # window high
+        feats.append(a[:, -1, :] - a[:, 0, :])     # window drift
+    return np.concatenate(feats, axis=1).astype(np.float32)
+
+
 def build_dataset(labelled: bool = True, max_bars: int | None = None) -> dict:
     """Build the full multi-timeframe AURUM dataset. See module docstring."""
     m5 = _load_m5_bars()

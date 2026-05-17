@@ -63,24 +63,40 @@ def _accuracy(pred: np.ndarray, true: np.ndarray) -> float:
 # Phase 1 — baselines under purged CV
 # ===========================================================================
 def cmd_baseline(args) -> int:
-    from aurum.datamodule import build_dataset
+    from aurum.datamodule import build_dataset, summary_features
+    from aurum.aurum_config import BASELINE_MAX_SAMPLES, BASELINE_XGB_ESTIMATORS
     from cv.purged_kfold import PurgedKFold
     from baselines.xgb_direction import create_xgb_baseline
 
     ds = build_dataset(labelled=True, max_bars=args.max_bars)
     X, y, y_ret = ds["X_flat"], ds["y_dir"], ds["y_ret"]
+    # XGBoost gets the compact tabular summary (fast); DLinear keeps the
+    # sequence (it is sequence-native and already fast).
+    X_xgb = summary_features(ds["X"])
+    # Cap the baseline sweep — it is a control number, not the deployed
+    # model, so it does not need full history.
+    if len(y) > BASELINE_MAX_SAMPLES:
+        log.info("[baseline] capping %d -> %d most-recent samples",
+                 len(y), BASELINE_MAX_SAMPLES)
+        X = X[-BASELINE_MAX_SAMPLES:]
+        X_xgb = X_xgb[-BASELINE_MAX_SAMPLES:]
+        y = y[-BASELINE_MAX_SAMPLES:]
+        y_ret = y_ret[-BASELINE_MAX_SAMPLES:]
     pk = PurgedKFold(n_splits=CV_N_SPLITS, horizon=LABEL_HORIZON_BARS,
                      embargo_pct=CV_EMBARGO_PCT)
+    log.info("[baseline] %d samples  xgb_features=%d  dlinear_features=%d",
+             len(y), X_xgb.shape[1], X.shape[1])
 
     report = {"dlinear": [], "xgboost": []}
     for fold, (tr, te) in enumerate(pk.split(len(y))):
-        # XGBoost baseline
-        xgb = create_xgb_baseline(use_gpu=args.use_gpu)
-        xgb.fit(X[tr], y[tr])
-        xpred = xgb.predict(X[te])
+        # XGBoost baseline — compact tabular features
+        xgb = create_xgb_baseline(use_gpu=args.use_gpu,
+                                  n_estimators=BASELINE_XGB_ESTIMATORS)
+        xgb.fit(X_xgb[tr], y[tr])
+        xpred = xgb.predict(X_xgb[te])
         xpf = _direction_pf(xpred, y_ret[te])
         report["xgboost"].append(xpf)
-        # DLinear baseline
+        # DLinear baseline — sequence input
         dpf = _train_dlinear_fold(X[tr], y[tr], X[te], y_ret[te], args)
         report["dlinear"].append(dpf)
         log.info("[baseline] fold %d/%d  xgb_PF=%.3f  dlinear_PF=%.3f",

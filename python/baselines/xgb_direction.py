@@ -95,5 +95,7 @@ class XGBDirectionBaseline:
         return True
 
 
-def create_xgb_baseline(use_gpu: bool = False) -> XGBDirectionBaseline:
-    return XGBDirectionBaseline(use_gpu=use_gpu)
+def create_xgb_baseline(use_gpu: bool = False,
+                        n_estimators: int = META_N_ESTIMATORS
+                        ) -> XGBDirectionBaseline:
+    return XGBDirectionBaseline(n_estimators=n_estimators, use_gpu=use_gpu)
