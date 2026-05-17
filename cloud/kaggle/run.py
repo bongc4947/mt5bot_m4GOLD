@@ -46,11 +46,13 @@ def sh(cmd: str, cwd: str | None = None) -> None:
 
 
 def main() -> int:
-    # 1. clone (or refresh) the repo
+    # 1. clone (or refresh) the repo. `git fetch origin master` only moves
+    #    FETCH_HEAD — on a shallow clone the origin/master ref may not
+    #    exist, so reset to FETCH_HEAD, not origin/master.
     if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
         sh(f"git clone --depth 1 {REPO_URL} {REPO_DIR}")
     else:
-        sh("git fetch --depth 1 origin master && git reset --hard origin/master",
+        sh("git fetch --depth 1 origin master && git reset --hard FETCH_HEAD",
            cwd=REPO_DIR)
 
     # 2. dependencies (Kaggle already ships torch/xgboost/onnx; this tops up)
