@@ -124,7 +124,7 @@ def pretrain_timeframe(tf: str, X: np.ndarray, *, epochs: int = SSL_EPOCHS,
             loss.backward()
             nn.utils.clip_grad_norm_(mod.parameters(), 1.0)
             opt.step()
-            tot += float(loss)
+            tot += loss.item()       # .item() detaches — no grad-tensor warning
             nb += 1
         if ep % 5 == 0 or ep == epochs - 1:
             log.info("[ssl:%s] epoch %d/%d  loss=%.5f", tf, ep + 1, epochs,

@@ -27,16 +27,17 @@ import sys
 
 REPO_URL = "https://github.com/bongc4947/mt5bot_m4GOLD.git"
 REPO_DIR = "/kaggle/working/MT5bot_m4Gold"
-# First-run defaults are deliberately conservative so the full AURUM
-# pipeline (baseline -> SSL pretrain -> finetune -> meta -> conformal ->
-# export) completes comfortably inside ONE Kaggle GPU session.
-#   EPOCHS    — SSL + fine-tune epoch count
-#   MAX_BARS  — cap on M5 bars used (most-recent N); bounds every phase
-# Once you've confirmed a clean end-to-end run, raise EPOCHS (e.g. 40-60)
-# and MAX_BARS (e.g. 0 = use all history) via the notebook's env or by
-# editing these two lines.
-EPOCHS = int(os.environ.get("EPOCHS", "12"))
-MAX_BARS = int(os.environ.get("MAX_BARS", "90000"))
+# FULL-STRENGTH defaults. The conservative first-run caps (12 epochs /
+# 90k bars) were only there to prove the pipeline; that succeeded, and
+# fine-tune val_PF was still climbing steeply (1.2 -> 1.75) when the cap
+# cut it off. These settings give AURUM a real shot at the deploy gate:
+#   EPOCHS=0    -> each phase uses its tuned config default
+#                  (SSL pretrain 50 epochs, fine-tune 60 w/ early-stop)
+#   MAX_BARS=0  -> use ALL available GOLD history
+# A full run is ~4-6 h on a Kaggle T4 — fits one GPU session. To do a
+# fast smoke run again, set EPOCHS=12 and MAX_BARS=90000 in the env.
+EPOCHS = int(os.environ.get("EPOCHS", "0"))
+MAX_BARS = int(os.environ.get("MAX_BARS", "0"))
 
 
 def sh(cmd: str, cwd: str | None = None) -> None:
@@ -63,10 +64,12 @@ def main() -> int:
 
     # 4. full AURUM pipeline (--use-gpu accelerates the XGBoost baseline +
     #    meta gate; the torch parts auto-detect CUDA via hardware_detector)
-    maxbars = f"--max-bars {MAX_BARS}" if MAX_BARS > 0 else ""
-    sh(f"{sys.executable} python/train_aurum.py all "
-       f"--epochs {EPOCHS} --use-gpu --batch-size 256 {maxbars}".strip(),
-       cwd=REPO_DIR)
+    flags = "--use-gpu --batch-size 256"
+    if EPOCHS > 0:
+        flags += f" --epochs {EPOCHS}"      # else: per-phase config defaults
+    if MAX_BARS > 0:
+        flags += f" --max-bars {MAX_BARS}"  # else: all available history
+    sh(f"{sys.executable} python/train_aurum.py all {flags}", cwd=REPO_DIR)
 
     # 5. surface the artifacts
     sh("ls -la onnx_out", cwd=REPO_DIR)
