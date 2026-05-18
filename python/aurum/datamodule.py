@@ -162,17 +162,24 @@ def _compute_channels(df: pd.DataFrame) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Triple-barrier labelling
 # ---------------------------------------------------------------------------
-def _triple_barrier(m5: pd.DataFrame, atr_m5: np.ndarray) -> np.ndarray:
+def _triple_barrier(m5: pd.DataFrame,
+                    atr_m5: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    For each M5 bar, simulate a long: which barrier is hit first within
-    LABEL_HORIZON_BARS — TP (+2 ATR) -> long(2), SL (-1 ATR) -> short(0),
-    neither -> flat(1). A symmetric short check is implied by the SL hit.
+    For each M5 bar, simulate a long over LABEL_HORIZON_BARS:
+      direction label — TP (+2 ATR) hit first -> long(2),
+                        SL (-1 ATR) hit first -> short(0), neither -> flat(1).
+      exec targets    — real per-bar SL/TP/timing supervision so the exec
+                        head learns something meaningful instead of a proxy:
+        y_exec[:,0] = max adverse excursion in ATR  (SL target)
+        y_exec[:,1] = max favourable excursion in ATR (TP target)
+        y_exec[:,2] = bars-to-resolution / horizon  (timing target, 0..1)
     """
     c = m5["close"].to_numpy(np.float64)
     h = m5["high"].to_numpy(np.float64)
     l = m5["low"].to_numpy(np.float64)
     n = len(c)
-    y = np.full(n, 1, dtype=np.int64)   # default flat
+    y = np.full(n, 1, dtype=np.int64)                  # default flat
+    y_exec = np.zeros((n, 3), dtype=np.float32)
     H = LABEL_HORIZON_BARS
     for i in range(n - H):
         a = atr_m5[i]
@@ -181,13 +188,22 @@ def _triple_barrier(m5: pd.DataFrame, atr_m5: np.ndarray) -> np.ndarray:
         tp = c[i] + LABEL_TB_TP_ATR * a
         sl = c[i] - LABEL_TB_SL_ATR * a
         win = slice(i + 1, i + 1 + H)
-        hit_tp = np.argmax(h[win] >= tp) if (h[win] >= tp).any() else H + 1
-        hit_sl = np.argmax(l[win] <= sl) if (l[win] <= sl).any() else H + 1
+        hw, lw = h[win], l[win]
+        hit_tp = np.argmax(hw >= tp) if (hw >= tp).any() else H + 1
+        hit_sl = np.argmax(lw <= sl) if (lw <= sl).any() else H + 1
         if hit_tp < hit_sl:
             y[i] = 2
         elif hit_sl < hit_tp:
             y[i] = 0
-    return y
+        # exec supervision — excursions over the window, in ATR units
+        mfe = float(np.clip((hw.max() - c[i]) / a, 0.0, 8.0))
+        mae = float(np.clip((c[i] - lw.min()) / a, 0.0, 8.0))
+        first_hit = min(hit_tp, hit_sl)
+        res = (first_hit + 1) / H if first_hit <= H else 1.0
+        y_exec[i, 0] = mae
+        y_exec[i, 1] = mfe
+        y_exec[i, 2] = float(np.clip(res, 0.0, 1.0))
+    return y, y_exec
 
 
 def _regime_label(m5: pd.DataFrame, atr_norm: np.ndarray) -> np.ndarray:
@@ -290,7 +306,7 @@ def build_dataset(labelled: bool = True, max_bars: int | None = None) -> dict:
         atr_m5 = tr.rolling(ATR_PERIOD, min_periods=ATR_PERIOD).mean().to_numpy()
         atr_norm_m5 = np.where(m5["close"].to_numpy() > 0,
                                atr_m5 / m5["close"].to_numpy(), 0.0)
-        y_dir_full = _triple_barrier(m5, atr_m5)
+        y_dir_full, y_exec_full = _triple_barrier(m5, atr_m5)
         y_reg_full = _regime_label(m5, atr_norm_m5)
         c = m5["close"].to_numpy(np.float64)
         fwd = np.zeros(n_m5, dtype=np.float32)
@@ -300,6 +316,7 @@ def build_dataset(labelled: bool = True, max_bars: int | None = None) -> dict:
         out["y_dir"] = y_dir_full[m5_anchors]
         out["y_ret"] = fwd[m5_anchors]
         out["y_regime"] = y_reg_full[m5_anchors]
+        out["y_exec"] = y_exec_full[m5_anchors]
         log.info("[datamodule] labels  short=%d flat=%d long=%d",
                  int((out["y_dir"] == 0).sum()),
                  int((out["y_dir"] == 1).sum()),

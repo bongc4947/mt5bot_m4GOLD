@@ -112,6 +112,18 @@ class MetaLabelGate:
     def predict_act_prob(self, feats: np.ndarray) -> np.ndarray:
         return self.model.predict_proba(feats)[:, 1]
 
+    def save(self, path: Path) -> None:
+        """Persist the fitted booster so the export step can re-run it."""
+        if not self._fitted:
+            raise RuntimeError("fit() before save()")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.model.save_model(str(path))
+
+    def load(self, path: Path) -> "MetaLabelGate":
+        self.model.load_model(str(path))
+        self._fitted = True
+        return self
+
     def export_onnx(self, path: Path) -> bool:
         try:
             from onnxmltools.convert import convert_xgboost
