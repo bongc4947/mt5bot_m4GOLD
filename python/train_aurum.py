@@ -300,7 +300,14 @@ def cmd_finetune(args, ds=None) -> int:
              tr.stop - tr.start, cal.stop - cal.start, te.stop - te.start, n)
 
     net = create_aurum_net().to(dev)
-    net.load_norm(ds["norm"])
+    # Train-only normalisation — channel mean/std MUST come from the train
+    # slice alone. Computing them over the whole series (incl. test) leaks
+    # test-period statistics into the model's baked-in BatchNorm prior.
+    from aurum.aurum_config import N_CHANNELS
+    m5_tr = ds["X"]["M5"][tr].reshape(-1, N_CHANNELS)
+    train_norm = {"mean": m5_tr.mean(axis=0).tolist(),
+                  "std": (m5_tr.std(axis=0) + 1e-8).tolist()}
+    net.load_norm(train_norm)
     ssl_paths = {tf: _ARTIFACT_DIR / f"aurum_ssl_encoder_{tf}.pt"
                  for tf in net.tf_order}
     if all(p.exists() for p in ssl_paths.values()):
@@ -382,7 +389,7 @@ def cmd_finetune(args, ds=None) -> int:
     if best_state is not None:
         net.load_state_dict(best_state)
     ckpt = _ARTIFACT_DIR / "aurum_net.pt"
-    torch.save({"state_dict": net.state_dict(), "norm": ds["norm"],
+    torch.save({"state_dict": net.state_dict(), "norm": train_norm,
                 "n_samples": n, "calib_pf": float(best_pf)}, ckpt)
     log.info("[finetune] best calib_PF=%.3f -> %s", best_pf, ckpt.name)
     return 0
