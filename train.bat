@@ -22,10 +22,17 @@ if not defined STRATEGIES set "STRATEGIES=H1,H4,H5,H6"
 REM Hardware probe
 python -c "import sys; sys.path.insert(0,'python'); from hardware_detector import detect; hw=detect(); print(f'[m4Gold] device={hw.device} batch={hw.batch_size} tier={hw.tier}')"
 
+if /I "%MODE%"=="metatrend"  goto :metatrend
 if /I "%MODE%"=="aurum"      goto :aurum
 if /I "%MODE%"=="strategies" goto :strategies
 if /I "%MODE%"=="ai"         goto :ai
 if /I "%MODE%"=="both"       goto :strategies
+
+:metatrend
+echo === MetaTrend (the validated edge — EMA trend + XGBoost meta-gate) ===
+python python\train_h7_metatrend.py
+if errorlevel 1 exit /b 1
+goto :done
 
 :aurum
 echo === AURUM v2 (full phased pipeline) ===
@@ -51,9 +58,10 @@ exit /b 0
 :help
 echo MT5bot_m4Gold local trainer
 echo.
-echo Usage: train.bat [strategies^|ai^|both^|aurum^|help]
+echo Usage: train.bat [metatrend^|strategies^|ai^|both^|aurum^|help]
 echo.
-echo   aurum  - run the AURUM v2 transformer pipeline (see docs/DESIGN_AURUM.md)
+echo   metatrend - train the VALIDATED edge (docs/DEPLOY_METATREND.md) ^<-- start here
+echo   aurum     - run the AURUM v2 transformer pipeline (see docs/DESIGN_AURUM.md)
 echo.
 echo Env vars:
 echo   EPOCHS=60          AI head epochs

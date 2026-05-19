@@ -93,5 +93,12 @@ no edge, and we stop spending on it.
 - M5-direction AURUM is **retired** as a primary signal. Confirmed dead.
 - The transformer / SSL / conformal machinery is **kept** — re-pointed at
   the meta-gate of strategies whose target has signal.
-- The deployable edge so far: **meta-labelled slow trend** (PF ~1.25).
-- Next decision point: results of Phase A (market-structure search).
+- **Phase A DONE** — market-structure features (pivots, S/R, trend-age,
+  streak, ema-gap) lifted the meta-trend edge from PF 1.27 → **1.41**.
+- **Phase D DONE (meta-trend)** — `python/train_h7_metatrend.py` +
+  `ea/MT5bot_m4Gold_MetaTrend.mq5` + `ea/includes/MetaGate.mqh` shipped.
+  Net PF 1.41 purged-CV, `deploy=true`, ONNX parity clean. This is the
+  first field-testable strategy with a measured, leak-free edge.
+  See `docs/DEPLOY_METATREND.md`.
+- Remaining: Phase B (order-flow features), Phase C (gold/silver
+  stat-arb), Phase E (portfolio combine).
