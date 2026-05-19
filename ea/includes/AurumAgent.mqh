@@ -38,6 +38,7 @@ struct AurumDecision
    double sl_atr;
    double tp_atr;
    int    regime;        // argmax regime class
+   double q50;           // model's median forward-return prediction
    string reason;
 };
 
@@ -329,6 +330,7 @@ AurumDecision AURUM_Decide()
    d.sl_atr = MathMax(0.3, MathMin(5.0, (double)out[6]));
    d.tp_atr = MathMax(0.5, MathMin(8.0, (double)out[7]));
    d.p_long = p_long; d.p_short = p_short;
+   d.q50 = q50;            // median forward-return — used as a sanity gate
 
    int reg = 9, rbest = 9;
    double rmax = out[9];

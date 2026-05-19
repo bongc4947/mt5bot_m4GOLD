@@ -20,7 +20,7 @@
 //|   * optional regime filter on entries.                             |
 //+------------------------------------------------------------------+
 #property copyright "MT5bot_m4Gold — AURUM v2"
-#property version   "1.11"
+#property version   "1.12"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -46,6 +46,11 @@ input double InpStackStepAtr   = 1.5;    // add a unit per +1.5 ATR of profit
 // --- regime filter (which regime classes may OPEN a trade) ---------
 //   0 trend-up   1 trend-down   2 range   3 high-vol
 input string InpTradeRegimes   = "0,1,2,3";
+// --- entry-quality filters (cut the buy-the-top / sell-the-bottom losers)
+input bool   InpUseQuantAgree  = true;   // require the model's q50 to back the call
+input bool   InpUseOverextGuard= true;   // skip entries chasing a range extreme
+input int    InpRangeLookback  = 60;     // M5 bars used to measure the range
+input double InpMaxEntryPct    = 0.85;   // skip longs above this %, shorts below 1-this
 
 CTrade   trade;
 datetime g_last_m5 = 0;
@@ -77,8 +82,9 @@ int OnInit()
                "InpRespectDeploy=false to demo an ungated model.");
    }
    else
-      PrintFormat("[AURUM-EA] LIVE v1.11 — deploy=%s, exits=SL/TP/trail, "
-                  "maxStack=%d", g_deploy_ok ? "true" : "false", InpMaxStack);
+      PrintFormat("[AURUM-EA] LIVE v1.12 — deploy=%s, exits=SL/TP/trail, "
+                  "entry-quality gate ON, maxStack=%d",
+                  g_deploy_ok ? "true" : "false", InpMaxStack);
    return INIT_SUCCEEDED;
 }
 
@@ -242,6 +248,66 @@ bool _RegimeAllowed(int regime)
    return (StringFind(InpTradeRegimes, IntegerToString(regime)) >= 0);
 }
 
+//+------------------------------------------------------------------+
+//| Entry-quality gate — rejects the trades that became the biggest   |
+//| losers: entering AT a local extreme right as the move exhausts    |
+//| (buying the top of a range, selling the bottom).                  |
+//+------------------------------------------------------------------+
+bool _EntryRejected(const AurumDecision &d)
+{
+   // (A) Head agreement — the model's median forward-return prediction
+   //     (q50) must point the SAME way as the direction head. When the
+   //     two heads disagree the signal is internally contradictory; at
+   //     a turning point that is exactly what happens.
+   if(InpUseQuantAgree)
+   {
+      if(d.direction > 0 && d.q50 <= 0.0)
+      { if(InpVerboseLog) Print("[AURUM] entry skipped — q50<=0 vs long"); return true; }
+      if(d.direction < 0 && d.q50 >= 0.0)
+      { if(InpVerboseLog) Print("[AURUM] entry skipped — q50>=0 vs short"); return true; }
+   }
+
+   // (B) Overextension — do not BUY at the top of the recent range or
+   //     SELL at the bottom, UNLESS the regime says it is a genuine
+   //     trend in that direction (a breakout, which is allowed).
+   if(InpUseOverextGuard)
+   {
+      MqlRates r[];
+      int need = InpRangeLookback + 2;
+      if(CopyRates(_Symbol, PERIOD_M5, 0, need, r) >= InpRangeLookback)
+      {
+         int n = ArraySize(r);
+         double hi = -DBL_MAX, lo = DBL_MAX;
+         for(int i = n - InpRangeLookback; i < n; i++)
+         {
+            if(r[i].high > hi) hi = r[i].high;
+            if(r[i].low  < lo) lo = r[i].low;
+         }
+         double span = hi - lo;
+         if(span > 0.0)
+         {
+            double px  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            double pos = (px - lo) / span;          // 0 = low, 1 = high
+            if(d.direction > 0 && pos > InpMaxEntryPct && d.regime != 0)
+            {
+               if(InpVerboseLog)
+                  PrintFormat("[AURUM] entry skipped — long at %.0f%% of "
+                              "range (chasing the top)", 100.0 * pos);
+               return true;
+            }
+            if(d.direction < 0 && pos < (1.0 - InpMaxEntryPct) && d.regime != 1)
+            {
+               if(InpVerboseLog)
+                  PrintFormat("[AURUM] entry skipped — short at %.0f%% of "
+                              "range (selling the bottom)", 100.0 * pos);
+               return true;
+            }
+         }
+      }
+   }
+   return false;
+}
+
 void _OpenPosition(const AurumDecision &d)
 {
    double lot = NormalizeDouble(InpBaseLot * d.lot_mult, 2);
@@ -326,12 +392,20 @@ void OnTick()
 
    if(pos_cnt == 0)
    {
-      // Fresh entry — gated by the regime filter.
-      if(_RegimeAllowed(d.regime))
+      // Fresh entry — gated by the regime filter AND the entry-quality
+      // gate that rejects buy-the-top / sell-the-bottom reversals.
+      if(!_RegimeAllowed(d.regime))
+      {
+         if(InpVerboseLog)
+            PrintFormat("[AURUM] entry skipped — regime %d not in {%s}",
+                        d.regime, InpTradeRegimes);
+      }
+      else if(_EntryRejected(d))
+      {
+         // reason already logged inside _EntryRejected
+      }
+      else
          _OpenPosition(d);
-      else if(InpVerboseLog)
-         PrintFormat("[AURUM] entry skipped — regime %d not in {%s}",
-                     d.regime, InpTradeRegimes);
    }
    else if(d.direction == pos_dir && InpMaxStack > 1 && pos_cnt < InpMaxStack)
    {
