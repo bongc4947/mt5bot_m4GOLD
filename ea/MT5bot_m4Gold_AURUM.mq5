@@ -20,7 +20,7 @@
 //|   * optional regime filter on entries.                             |
 //+------------------------------------------------------------------+
 #property copyright "MT5bot_m4Gold — AURUM v2"
-#property version   "1.10"
+#property version   "1.11"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -32,17 +32,17 @@ input bool   InpRespectDeploy  = true;   // honour spec deploy=false
 input bool   InpVerboseLog     = true;
 // --- risk / exits --------------------------------------------------
 input double InpMinSlAtr       = 1.5;    // floor on SL distance (ATR mult)
-input double InpMinRR          = 1.8;    // TP >= InpMinRR * SL distance
+input double InpMinRR          = 2.2;    // TP >= InpMinRR * SL distance
 input bool   InpUseBreakeven   = true;   // move SL to entry once in profit
-input double InpBreakevenAtr   = 0.8;    // ...after price moves +0.8 ATR
-input bool   InpUseTrailing    = true;   // ATR trailing stop
-input double InpTrailStartAtr  = 1.2;    // begin trailing after +1.2 ATR
-input double InpTrailAtr       = 1.5;    // trail this far behind price
+input double InpBreakevenAtr   = 1.5;    // ...after price moves +1.5 ATR
+input bool   InpUseTrailing    = true;   // loose ATR trailing stop
+input double InpTrailStartAtr  = 2.5;    // begin trailing only well in profit
+input double InpTrailAtr       = 3.0;    // trail loosely — catch reversals only
 input int    InpMaxHoldBars    = 72;     // force-close after N M5 bars (0=off)
 input bool   InpExitOnReverse  = true;   // close on a confident opposite call
 // --- pyramiding ----------------------------------------------------
-input int    InpMaxStack       = 3;      // max stacked units (1 = no stacking)
-input double InpStackStepAtr   = 1.0;    // add a unit per +1 ATR of open profit
+input int    InpMaxStack       = 2;      // max stacked units (1 = no stacking)
+input double InpStackStepAtr   = 1.5;    // add a unit per +1.5 ATR of profit
 // --- regime filter (which regime classes may OPEN a trade) ---------
 //   0 trend-up   1 trend-down   2 range   3 high-vol
 input string InpTradeRegimes   = "0,1,2,3";
@@ -77,7 +77,7 @@ int OnInit()
                "InpRespectDeploy=false to demo an ungated model.");
    }
    else
-      PrintFormat("[AURUM-EA] LIVE v1.10 — deploy=%s, exits=SL/TP/trail, "
+      PrintFormat("[AURUM-EA] LIVE v1.11 — deploy=%s, exits=SL/TP/trail, "
                   "maxStack=%d", g_deploy_ok ? "true" : "false", InpMaxStack);
    return INIT_SUCCEEDED;
 }
