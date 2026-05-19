@@ -60,7 +60,22 @@ On attach, expect:
 | `InpUseTrailing` / `InpTrailStartAtr` / `InpTrailAtr` | on / 2.0 / 3.0 | loose trailing stop |
 | `InpMaxHoldBars` | 288 | force-exit after ~24 h |
 | `InpExitOnFlip` | true | exit when the EMA trend flips |
+| `InpMaxStack` | 3 | max stacked (pyramid) units — set 1 to disable |
+| `InpStackStepAtr` | 1.0 | add a unit per +1 ATR of stack profit |
 | `InpRespectDeploy` | true | sit idle if `deploy=false` |
+
+### Pyramiding (multi-stacking)
+
+With `InpMaxStack > 1` the EA stacks units *into a winning trend*: it adds
+a unit only when the trend still holds, the meta-gate still says act, and
+the open stack is already in profit by `InpStackStepAtr` ATR per existing
+unit. It is a **pyramid, never a martingale** — it never averages into a
+loser. The whole stack exits together on a trend flip / trail / timeout.
+
+Note: stacking amplifies both gains and drawdown — 3 units = 3× exposure.
+Keep `InpBaseLot` small while field-testing. This is the honest version
+of "more active trading": it does NOT scalp (the research proved short-
+horizon scalping on GOLD has no edge) — it presses the validated trend.
 
 ## Honest expectations
 

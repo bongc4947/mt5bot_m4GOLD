@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| MetaGate.mqh — MT5-side runner for the meta-trend strategy.       |
+//| MetaGate.mqh - MT5-side runner for the meta-trend strategy.       |
 //|                                                                    |
 //| The validated GOLD edge (docs/RESEARCH_FINDINGS.md): a slow EMA    |
 //| 50/200 cross supplies the trade DIRECTION; an XGBoost meta-gate    |
@@ -7,7 +7,7 @@
 //| purged CV, 5/6 folds strongly positive.                            |
 //|                                                                    |
 //| The 18-feature vector built here MUST match python/aurum/          |
-//| metatrend.py::build_features bit-for-bit — train/serve parity.     |
+//| metatrend.py::build_features bit-for-bit - train/serve parity.     |
 //|                                                                    |
 //| Bundle (MT5 Common Files):                                         |
 //|   M4GOLD_METATREND_GOLD.onnx        meta-gate  float[1,18]->[1,2]  |
@@ -16,7 +16,7 @@
 #ifndef METAGATE_MQH
 #define METAGATE_MQH
 
-// ---- constants — mirror python/aurum/metatrend.py -------------------
+// ---- constants - mirror python/aurum/metatrend.py -------------------
 #define MG_EMA_FAST     50
 #define MG_EMA_SLOW     200
 #define MG_N_FEATURES   18
@@ -30,7 +30,7 @@ double g_mg_actthr   = 0.55;
 string g_mg_version  = "";
 
 //+------------------------------------------------------------------+
-//| Minimal JSON helpers (spec is single-byte ASCII — FILE_ANSI).     |
+//| Minimal JSON helpers (spec is single-byte ASCII - FILE_ANSI).     |
 //+------------------------------------------------------------------+
 double _MGJsonNum(const string js, const string key, double dflt)
 {
@@ -108,10 +108,10 @@ bool MG_Init()
       g_mg_deploy  = _MGJsonBool(js, "deploy");
       g_mg_version = _MGJsonStr(js, "version");
       if(StringFind(js, "\"strategy\"") < 0)
-         Print("[MetaGate] *** WRONG SPEC FILE *** — no strategy key.");
+         Print("[MetaGate] *** WRONG SPEC FILE *** - no strategy key.");
    }
    else
-      Print("[MetaGate] *** SPEC MISSING *** — M4GOLD_METATREND_GOLD_spec.json "
+      Print("[MetaGate] *** SPEC MISSING *** - M4GOLD_METATREND_GOLD_spec.json "
             "not in Common Files.");
 
    g_mg_ready = true;
@@ -180,7 +180,7 @@ bool MG_BuildFeatures(float &f[])
    double ret48 = MathLog(MathMax(c,eps) / MathMax(cls[last-48],eps));
    double ret96 = MathLog(MathMax(c,eps) / MathMax(cls[last-96],eps));
 
-   // --- ATR(14) and ATR(48) — rolling mean of true range ---
+   // --- ATR(14) and ATR(48) - rolling mean of true range ---
    double atr14 = 0, atr48 = 0;
    for(int j = last-13; j <= last; j++)
    {
