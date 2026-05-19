@@ -38,8 +38,9 @@ from aurum.aurum_config import (
 
 log = logging.getLogger(__name__)
 
-# M5-bar multiples per timeframe — used for resampling.
+# M5-bar multiples per timeframe (for warmup sizing) + pandas resample rule.
 _TF_M5_MULT = {"M5": 1, "M15": 3, "H1": 12}
+_TF_RULE    = {"M5": None, "M15": "15min", "H1": "1h"}
 
 
 # ---------------------------------------------------------------------------
@@ -98,22 +99,25 @@ def _load_m5_bars() -> pd.DataFrame:
     return df
 
 
-def _resample(m5: pd.DataFrame, mult: int) -> pd.DataFrame:
-    """Aggregate `mult` consecutive M5 bars into one higher-tf bar."""
-    if mult == 1:
-        return m5.copy()
-    n = (len(m5) // mult) * mult
-    g = m5.iloc[:n].copy()
-    g["grp"] = np.arange(n) // mult
-    agg = g.groupby("grp").agg(
-        time=("time", "last"),
+def _resample(m5: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """
+    Aggregate M5 bars into CLOCK-ALIGNED higher-timeframe bars.
+
+    `rule` is a pandas offset alias ('15min', '1h'). Clock alignment —
+    not positional 12-at-a-time grouping — so the bars line up exactly
+    with MT5's native H1/M15 bars the EA reads via CopyRates. Positional
+    grouping drifts out of phase across daily/weekend gaps. The bar's
+    `time` is its period START (label='left'), matching MT5's convention.
+    """
+    g = m5.set_index("time")
+    agg = g.resample(rule, label="left", closed="left").agg(
         open=("open", "first"),
         high=("high", "max"),
         low=("low", "min"),
         close=("close", "last"),
         volume=("volume", "sum"),
-    ).reset_index(drop=True)
-    return agg
+    )
+    return agg.dropna(subset=["close"]).reset_index()
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +270,10 @@ def build_dataset(labelled: bool = True, max_bars: int | None = None) -> dict:
     if max_bars is not None and len(m5) > max_bars:
         m5 = m5.iloc[-max_bars:].reset_index(drop=True)
 
-    # Per-timeframe bar frames + channels.
-    bars = {tf: _resample(m5, _TF_M5_MULT[tf]) for tf in TIMEFRAMES}
+    # Per-timeframe bar frames + channels (clock-aligned HTF bars).
+    bars = {}
+    for tf in TIMEFRAMES:
+        bars[tf] = m5.copy() if tf == "M5" else _resample(m5, _TF_RULE[tf])
     chans = {tf: _compute_channels(bars[tf]) for tf in TIMEFRAMES}
 
     # Per-channel normalisation stats (from M5 — the densest source).
@@ -283,12 +289,25 @@ def build_dataset(labelled: bool = True, max_bars: int | None = None) -> dict:
     log.info("[datamodule] %d M5 anchors  (warmup=%d, labelled=%s)",
              len(m5_anchors), warmup, labelled)
 
-    # Window each timeframe. The higher-tf anchor for M5 bar a is a // mult.
+    # Window each timeframe with CAUSAL anchors. For an M5 anchor, the
+    # higher-tf window must end at the last FULLY-CLOSED HTF bar as of
+    # that M5 bar's close — never the still-forming current HTF bar,
+    # which aggregates M5 bars from the future and leaks the label.
+    # tz-aware -> tz-naive datetime64 so numpy timedelta arithmetic works
+    m5_time = m5["time"].dt.tz_localize(None).to_numpy()
+    # an M5 bar opens at t and closes ~5 min later — that is decision time
+    m5_decision = m5_time + np.timedelta64(5, "m")
     X = {}
     for tf, L in TIMEFRAMES.items():
-        mult = _TF_M5_MULT[tf]
-        tf_anchors = m5_anchors // mult
-        tf_anchors = np.clip(tf_anchors, 0, len(chans[tf]) - 1)
+        if tf == "M5":
+            tf_anchors = m5_anchors            # the M5 bar itself is closed
+        else:
+            period = np.timedelta64(_TF_M5_MULT[tf] * 5, "m")
+            htf_close = (bars[tf]["time"].dt.tz_localize(None).to_numpy()
+                         + period)
+            # last HTF bar whose close <= the M5 bar's decision time
+            idx = np.searchsorted(htf_close, m5_decision, side="right") - 1
+            tf_anchors = np.clip(idx[m5_anchors], 0, len(chans[tf]) - 1)
         X[tf] = _window_for_tf(chans[tf], L, tf_anchors)
 
     X_flat = np.concatenate(

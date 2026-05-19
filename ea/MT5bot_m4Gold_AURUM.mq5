@@ -20,7 +20,7 @@
 //|   * optional regime filter on entries.                             |
 //+------------------------------------------------------------------+
 #property copyright "MT5bot_m4Gold — AURUM v2"
-#property version   "1.12"
+#property version   "1.13"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -82,8 +82,8 @@ int OnInit()
                "InpRespectDeploy=false to demo an ungated model.");
    }
    else
-      PrintFormat("[AURUM-EA] LIVE v1.12 — deploy=%s, exits=SL/TP/trail, "
-                  "entry-quality gate ON, maxStack=%d",
+      PrintFormat("[AURUM-EA] LIVE v1.13 — deploy=%s, closed-bar sync, "
+                  "exits=SL/TP/trail, entry gate ON, maxStack=%d",
                   g_deploy_ok ? "true" : "false", InpMaxStack);
    return INIT_SUCCEEDED;
 }
@@ -231,7 +231,9 @@ void _ManageOpen()
 double _AtrM5()
 {
    MqlRates r[];
-   if(CopyRates(_Symbol, PERIOD_M5, 0, 20, r) < 16) return 0.0;
+   // shift 1 — exclude the forming bar so ATR matches the closed-bar
+   // basis the model and the SL/TP sizing were calibrated on.
+   if(CopyRates(_Symbol, PERIOD_M5, 1, 20, r) < 16) return 0.0;
    double s = 0; int n = 0;
    for(int k = 1; k < ArraySize(r); k++)
    {

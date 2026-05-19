@@ -195,10 +195,13 @@ void _AurumFillChannels(ENUM_TIMEFRAMES tf, int lookback,
                         float &dst[], int off)
 {
    // Pull extra history for the rolling stats (z-score 200, vol-ma 50, atr 14).
+   // Start at shift 1 — bar 0 is the still-FORMING candle. The model was
+   // trained on CLOSED bars only; feeding it a partial bar de-syncs the
+   // model from real time-price movement and mistimes entries.
    int warm = 220;
    int need = lookback + warm;
    MqlRates r[];
-   int got = CopyRates(_Symbol, tf, 0, need, r);
+   int got = CopyRates(_Symbol, tf, 1, need, r);
    if(got < lookback + 30)
    {
       // not enough history — zero-fill (model still runs, low confidence)
