@@ -131,9 +131,11 @@ bool AURUM_Init()
    }
    else Print("[AURUM] meta gate missing — proceeding without meta filter");
 
-   // spec JSON
+   // spec JSON — FILE_ANSI is REQUIRED: the spec is single-byte ASCII
+   // (Python json.dumps). Without FILE_ANSI, MT5 defaults FILE_TXT to
+   // UTF-16 and reads the file as garbage, so every key lookup fails.
    int h = FileOpen("M4GOLD_AURUM_GOLD_spec.json",
-                    FILE_READ | FILE_TXT | FILE_COMMON);
+                    FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
    if(h != INVALID_HANDLE)
    {
       string js = "";

@@ -49,7 +49,9 @@ bool TR_LoadSpec(const string spec_path, TR_Spec &out)
     // Spec is a JSON file in MQL5\Files\HYDRA4_H4TREND_<sym>_spec.json.
     // We parse a few key fields by simple string search rather than pulling
     // in a full JSON library — the keys we care about are fixed.
-    int h = FileOpen(spec_path, FILE_READ | FILE_TXT | FILE_COMMON);
+    // FILE_ANSI required — spec JSON is single-byte ASCII; without it
+    // MT5 reads FILE_TXT as UTF-16 and every key lookup fails.
+    int h = FileOpen(spec_path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
     if(h == INVALID_HANDLE)
     {
         PrintFormat("[TrendRule] cannot open spec %s (err=%d)",

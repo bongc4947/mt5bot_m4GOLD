@@ -129,7 +129,9 @@ double _JsonGetDouble(const string content, const string key, double dflt)
 
 bool _ReadSpec(const string fname, string &out)
 {
-   int h = FileOpen(fname, FILE_READ | FILE_TXT | FILE_COMMON);
+   // FILE_ANSI required — Python-written spec JSON is single-byte ASCII;
+   // without it MT5 reads FILE_TXT as UTF-16 and the parse fails.
+   int h = FileOpen(fname, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
    if(h == INVALID_HANDLE) { out = ""; return false; }
    out = "";
    while(!FileIsEnding(h)) out += FileReadString(h);
