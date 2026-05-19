@@ -51,6 +51,9 @@ double g_aurum_kellyf = 0.25;
 double g_aurum_voltgt = 0.10;
 double g_aurum_maxlot = 2.0;
 double g_aurum_minlot = 0.25;
+bool   g_aurum_deploy = false;   // spec's deploy flag
+string g_aurum_version = "";     // spec version string
+bool   g_aurum_spec_ok = false;  // spec file was found AND parsed sanely
 
 //+------------------------------------------------------------------+
 //| Minimal JSON scalar extractor (spec files are flat enough).       |
@@ -76,6 +79,30 @@ double _AurumJsonNum(const string js, const string key, double dflt)
       e++;
    }
    return StringToDouble(StringSubstr(js, s, e - s));
+}
+
+// Boolean extractor — looks for `"key": true/false`.
+bool _AurumJsonBool(const string js, const string key)
+{
+   int p = StringFind(js, "\"" + key + "\"");
+   if(p < 0) return false;
+   int c = StringFind(js, ":", p);
+   if(c < 0) return false;
+   return (StringFind(StringSubstr(js, c, 12), "true") >= 0);
+}
+
+// String extractor — looks for `"key": "value"`.
+string _AurumJsonStr(const string js, const string key)
+{
+   int p = StringFind(js, "\"" + key + "\"");
+   if(p < 0) return "";
+   int c = StringFind(js, ":", p);
+   if(c < 0) return "";
+   int q1 = StringFind(js, "\"", c);
+   if(q1 < 0) return "";
+   int q2 = StringFind(js, "\"", q1 + 1);
+   if(q2 < 0) return "";
+   return StringSubstr(js, q1 + 1, q2 - q1 - 1);
 }
 
 //+------------------------------------------------------------------+
@@ -112,17 +139,32 @@ bool AURUM_Init()
       string js = "";
       while(!FileIsEnding(h)) js += FileReadString(h);
       FileClose(h);
-      g_aurum_qhat   = _AurumJsonNum(js, "q_hat",         0.5);
-      g_aurum_actthr = _AurumJsonNum(js, "act_threshold", 0.55);
-      g_aurum_kellyf = _AurumJsonNum(js, "kelly_fraction",0.25);
-      g_aurum_voltgt = _AurumJsonNum(js, "vol_target",    0.10);
-      g_aurum_maxlot = _AurumJsonNum(js, "max_lot_mult",  2.0);
-      g_aurum_minlot = _AurumJsonNum(js, "min_lot_mult",  0.25);
+      g_aurum_qhat    = _AurumJsonNum(js, "q_hat",         0.5);
+      g_aurum_actthr  = _AurumJsonNum(js, "act_threshold", 0.55);
+      g_aurum_kellyf  = _AurumJsonNum(js, "kelly_fraction",0.25);
+      g_aurum_voltgt  = _AurumJsonNum(js, "vol_target",    0.10);
+      g_aurum_maxlot  = _AurumJsonNum(js, "max_lot_mult",  2.0);
+      g_aurum_minlot  = _AurumJsonNum(js, "min_lot_mult",  0.25);
+      g_aurum_deploy  = _AurumJsonBool(js, "deploy");
+      g_aurum_version = _AurumJsonStr(js, "version");
+      // A genuine AURUM spec always carries a "q_hat" key. If it came back
+      // as the bare default, the wrong file was staged.
+      g_aurum_spec_ok = (StringFind(js, "\"q_hat\"") >= 0
+                         && StringFind(js, "\"strategy\"") >= 0);
+      if(!g_aurum_spec_ok)
+         Print("[AURUM] *** WRONG SPEC FILE *** — M4GOLD_AURUM_GOLD_spec.json "
+               "in Common Files has no q_hat/strategy key. You staged the "
+               "wrong file (e.g. AURUM_report.json or an old spec). Re-copy "
+               "M4GOLD_AURUM_GOLD_spec.json from the deploy=True training run.");
    }
-   else Print("[AURUM] spec JSON missing — using built-in defaults");
+   else
+      Print("[AURUM] *** SPEC MISSING *** — M4GOLD_AURUM_GOLD_spec.json not "
+            "in MT5 Common Files. Copy the bundle there, then reload the EA.");
 
    g_aurum_ready = true;
-   PrintFormat("[AURUM] ready  q_hat=%.4f  act_thr=%.2f  kelly_f=%.2f",
+   PrintFormat("[AURUM] spec: version=%s  deploy=%s  q_hat=%.4f  act_thr=%.2f  "
+               "kelly_f=%.2f", g_aurum_version == "" ? "?" : g_aurum_version,
+               g_aurum_deploy ? "true" : "false",
                g_aurum_qhat, g_aurum_actthr, g_aurum_kellyf);
    return true;
 }

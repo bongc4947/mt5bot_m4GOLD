@@ -31,22 +31,6 @@ datetime g_last_m5 = 0;
 bool     g_deploy_ok = true;
 
 //+------------------------------------------------------------------+
-bool _ReadDeployFlag()
-{
-   int h = FileOpen("M4GOLD_AURUM_GOLD_spec.json",
-                    FILE_READ | FILE_TXT | FILE_COMMON);
-   if(h == INVALID_HANDLE) return false;       // no spec -> treat as not deployable
-   string js = "";
-   while(!FileIsEnding(h)) js += FileReadString(h);
-   FileClose(h);
-   int p = StringFind(js, "\"deploy\"");
-   if(p < 0) return false;
-   int c = StringFind(js, ":", p);
-   return (c >= 0 && StringFind(js, "true", c) >= 0
-           && StringFind(js, "true", c) < c + 8);
-}
-
-//+------------------------------------------------------------------+
 int OnInit()
 {
    string s = _Symbol;
@@ -61,10 +45,23 @@ int OnInit()
       Print("[AURUM-EA] AURUM bundle failed to load — EA idle.");
       return INIT_SUCCEEDED;     // stay attached but dormant
    }
-   g_deploy_ok = _ReadDeployFlag();
+   // Single source of truth — AURUM_Init already parsed the spec.
+   g_deploy_ok = g_aurum_deploy;
    if(InpRespectDeploy && !g_deploy_ok)
-      Print("[AURUM-EA] spec deploy=false — EA idle until a qualifying "
-            "training run produces deploy=true.");
+   {
+      if(!g_aurum_spec_ok)
+         Print("[AURUM-EA] EA idle — the spec file is wrong/missing (see the "
+               "*** WRONG SPEC FILE *** line above). Stage the correct "
+               "M4GOLD_AURUM_GOLD_spec.json and reload.");
+      else
+         Print("[AURUM-EA] EA idle — spec deploy=false. This model did not "
+               "clear the deploy gate; train a qualifying model or set "
+               "InpRespectDeploy=false to demo it anyway.");
+   }
+   else
+      PrintFormat("[AURUM-EA] LIVE — deploy=%s respect=%s, trading enabled.",
+                  g_deploy_ok ? "true" : "false",
+                  InpRespectDeploy ? "true" : "false");
    return INIT_SUCCEEDED;
 }
 
