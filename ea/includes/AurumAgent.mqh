@@ -124,10 +124,17 @@ bool AURUM_Init()
    g_aurum_meta = OnnxCreate("M4GOLD_AURUM_META_GOLD.onnx", ONNX_COMMON_FOLDER);
    if(g_aurum_meta != INVALID_HANDLE)
    {
-      ulong m_in[]  = {1, AURUM_META_DIM};
-      ulong m_out[] = {1, 2};
+      // The XGBoost meta gate ONNX has ONE input and TWO outputs:
+      //   output 0 = "label"          int64 [1]
+      //   output 1 = "probabilities"  float [1,2]
+      // Both shapes must be declared, and OnnxRun must be passed BOTH
+      // output arrays, or it fails with "incorrect parameters count".
+      ulong m_in[]   = {1, AURUM_META_DIM};
+      ulong m_lbl[]  = {1};
+      ulong m_prob[] = {1, 2};
       OnnxSetInputShape (g_aurum_meta, 0, m_in);
-      OnnxSetOutputShape(g_aurum_meta, 0, m_out);
+      OnnxSetOutputShape(g_aurum_meta, 0, m_lbl);
+      OnnxSetOutputShape(g_aurum_meta, 1, m_prob);
    }
    else Print("[AURUM] meta gate missing — proceeding without meta filter");
 
@@ -345,7 +352,12 @@ AurumDecision AURUM_Decide()
    if(g_aurum_meta != INVALID_HANDLE)
    {
       float mf[]; ArrayResize(mf, AURUM_META_DIM);
-      double conf = MathAbs(p_long - p_short);
+      // dir_conf = top probability minus 2nd — must match Python
+      // meta_label.build_meta_features (sorted top1-top2 of the 3 dir probs).
+      double mx = MathMax(p_short, MathMax(p_flat, p_long));
+      double mn = MathMin(p_short, MathMin(p_flat, p_long));
+      double mid = (p_short + p_flat + p_long) - mx - mn;
+      double conf = mx - mid;
       // realized vol = std of the 128 M5 ret channel values just built
       double rm = 0; for(int i=0;i<AURUM_L_M5;i++) rm += x[i*AURUM_N_CH];
       rm /= AURUM_L_M5;
@@ -357,9 +369,11 @@ AurumDecision AURUM_Decide()
       mf[3]=(float)conf; mf[4]=(float)q10; mf[5]=(float)q50; mf[6]=(float)q90;
       mf[7]=out[9]; mf[8]=out[10]; mf[9]=out[11]; mf[10]=out[12];
       mf[11]=(float)rv; mf[12]=(float)atrn;
-      float mout[]; ArrayResize(mout, 2);
-      if(OnnxRun(g_aurum_meta, ONNX_DEFAULT, mf, mout))
-         meta_ok = ((double)mout[1] >= g_aurum_actthr);
+      // meta ONNX has 2 outputs: label int64[1] + probabilities float[1,2].
+      long  mlbl[];  ArrayResize(mlbl,  1);
+      float mprob[]; ArrayResize(mprob, 2);
+      if(OnnxRun(g_aurum_meta, ONNX_DEFAULT, mf, mlbl, mprob))
+         meta_ok = ((double)mprob[1] >= g_aurum_actthr);   // P(act)
    }
 
    d.confident = (singleton && meta_ok && raw != 1);
