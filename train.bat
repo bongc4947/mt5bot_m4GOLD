@@ -5,14 +5,18 @@ REM Picks up GPU automatically if a CUDA-capable Python + torch is on PATH;
 REM falls back to CPU otherwise. Set FORCE_CPU=1 to override.
 REM
 REM Usage:
-REM   train.bat                ^&^& trains all strategies + AI head on GOLD
-REM   train.bat strategies     ^&^& strategies only
-REM   train.bat ai             ^&^& AI direction head only
+REM   train.bat                ^&^& trains MetaTrend — the validated edge (default)
+REM   train.bat strategies     ^&^& LEGACY H1/H4/H5/H6 rule stack (superseded)
+REM   train.bat ai             ^&^& LEGACY AI direction head (no edge — retired)
+REM   train.bat aurum          ^&^& AURUM v2 research pipeline
 REM   train.bat help           ^&^& show options
 
 setlocal
 set "MODE=%~1"
-if "%MODE%"=="" set "MODE=both"
+REM Default = metatrend: the one validated, deployable edge (PF ~1.41,
+REM leak-free purged CV). strategies/ai/aurum are legacy/research paths
+REM that the edge search superseded — run them explicitly if needed.
+if "%MODE%"=="" set "MODE=metatrend"
 if "%MODE%"=="help" goto :help
 
 if not defined EPOCHS set "EPOCHS=60"
@@ -58,10 +62,12 @@ exit /b 0
 :help
 echo MT5bot_m4Gold local trainer
 echo.
-echo Usage: train.bat [metatrend^|strategies^|ai^|both^|aurum^|help]
+echo Usage: train.bat [metatrend^|strategies^|ai^|aurum^|help]
 echo.
-echo   metatrend - train the VALIDATED edge (docs/DEPLOY_METATREND.md) ^<-- start here
-echo   aurum     - run the AURUM v2 transformer pipeline (see docs/DESIGN_AURUM.md)
+echo   metatrend - the VALIDATED edge, PF ~1.41 (default; docs/DEPLOY_METATREND.md)
+echo   strategies- LEGACY H1/H4/H5/H6 rule stack (superseded — 0/4 had edge)
+echo   ai        - LEGACY M5-direction AI head (retired — no edge)
+echo   aurum     - AURUM v2 transformer research pipeline (docs/DESIGN_AURUM.md)
 echo.
 echo Env vars:
 echo   EPOCHS=60          AI head epochs
