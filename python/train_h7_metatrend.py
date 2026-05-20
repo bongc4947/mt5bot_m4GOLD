@@ -69,7 +69,8 @@ def _make_xgb(use_gpu: bool):
         random_state=42, n_jobs=0)
 
 
-def train(max_bars: int | None, use_gpu: bool) -> dict:
+def train(max_bars: int | None, use_gpu: bool,
+          with_tspulse: bool = False) -> dict:
     from aurum.datamodule import _load_m5_bars
 
     m5 = _load_m5_bars()
@@ -78,9 +79,31 @@ def train(max_bars: int | None, use_gpu: bool) -> dict:
     log.info("[h7] %d M5 bars  span=%s -> %s",
              len(m5), m5["time"].iloc[0], m5["time"].iloc[-1])
 
-    X = build_features(m5)
+    # Labels are computed on the FULL m5 series (EMA primary needs full
+    # warmup). The valid_lo slice is applied AFTER, identically, to X and
+    # to (y, prim, fwd) — keeping the train/serve alignment exact.
+    X_full = build_features(m5)
     lab = build_meta_label(m5)
-    y, prim, fwd = lab["y"], lab["primary"], lab["fwd_ret"]
+    y_full = lab["y"]; prim_full = lab["primary"]; fwd_full = lab["fwd_ret"]
+
+    feat_names = list(META_FEATURES)
+    valid_lo = 0
+    if with_tspulse:
+        from aurum.tspulse_features import extract as tspulse_extract, \
+            TSPULSE_FEATURES, N_TSPULSE_FEATURES
+        valid_lo = 512 - 1               # tspulse needs 512-bar context
+        anchors_full = np.arange(valid_lo, len(m5), dtype=np.int64)
+        X_ts = tspulse_extract(m5, anchors_full)
+        X = np.concatenate([X_full[valid_lo:], X_ts], axis=1).astype(np.float32)
+        feat_names = feat_names + list(TSPULSE_FEATURES)
+        log.info("[h7] tspulse features appended  (+%d, total=%d)",
+                 N_TSPULSE_FEATURES, X.shape[1])
+    else:
+        X = X_full
+
+    y    = y_full[valid_lo:]
+    prim = prim_full[valid_lo:]
+    fwd  = fwd_full[valid_lo:]
     log.info("[h7] features=%d  meta-label pos rate=%.3f",
              N_META_FEATURES, float(y.mean()))
 
@@ -127,7 +150,9 @@ def train(max_bars: int | None, use_gpu: bool) -> dict:
     final.fit(X, y, sample_weight=w[y])
 
     _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    onnx_ok = _export_onnx(final, _ARTIFACT_DIR / "M4GOLD_METATREND_GOLD.onnx")
+    n_feat = X.shape[1]    # actual feature count (may include tspulse extras)
+    onnx_ok = _export_onnx(final, _ARTIFACT_DIR / "M4GOLD_METATREND_GOLD.onnx",
+                            n_features=n_feat)
 
     spec = {
         "strategy": "METATREND",
@@ -159,7 +184,7 @@ def train(max_bars: int | None, use_gpu: bool) -> dict:
     return spec
 
 
-def _export_onnx(model, path: Path) -> bool:
+def _export_onnx(model, path: Path, n_features: int) -> bool:
     """Export the XGBoost meta-gate to ONNX, validate parity vs the booster."""
     try:
         from onnxmltools.convert import convert_xgboost
@@ -168,10 +193,10 @@ def _export_onnx(model, path: Path) -> bool:
         log.warning("[h7] onnxmltools missing — cannot export ONNX")
         return False
     onnx_model = convert_xgboost(
-        model, initial_types=[("input", FloatTensorType([1, N_META_FEATURES]))])
+        model, initial_types=[("input", FloatTensorType([1, n_features]))])
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
-    # parity check
+    # parity check uses the same input shape the model was trained on
     try:
         import onnxruntime as ort
         sess = ort.InferenceSession(str(path),
@@ -179,7 +204,7 @@ def _export_onnx(model, path: Path) -> bool:
         in_name = sess.get_inputs()[0].name
         max_err = 0.0
         for _ in range(16):
-            x = np.random.randn(1, N_META_FEATURES).astype(np.float32)
+            x = np.random.randn(1, n_features).astype(np.float32)
             onnx_p = sess.run(None, {in_name: x})[1][0][1]   # P(class 1)
             xgb_p = float(model.predict_proba(x)[0, 1])
             max_err = max(max_err, abs(onnx_p - xgb_p))
@@ -200,9 +225,11 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--max-bars", type=int, default=None)
     p.add_argument("--use-gpu", action="store_true")
+    p.add_argument("--with-tspulse", action="store_true",
+                   help="append IBM TSPulse-derived features (ablation)")
     args = p.parse_args(argv)
     t0 = time.time()
-    spec = train(args.max_bars, args.use_gpu)
+    spec = train(args.max_bars, args.use_gpu, with_tspulse=args.with_tspulse)
     log.info("[h7] done in %.0fs", time.time() - t0)
     return 0 if spec.get("deploy") else 0   # always 0 — non-deploy is a finding
 
