@@ -70,7 +70,8 @@ def _make_xgb(use_gpu: bool):
 
 
 def train(max_bars: int | None, use_gpu: bool,
-          with_tspulse: bool = False) -> dict:
+          with_tspulse: bool = False,
+          with_orderflow: bool = False) -> dict:
     from aurum.datamodule import _load_m5_bars
 
     m5 = _load_m5_bars()
@@ -88,16 +89,30 @@ def train(max_bars: int | None, use_gpu: bool,
 
     feat_names = list(META_FEATURES)
     valid_lo = 0
+    extras: list[np.ndarray] = []
     if with_tspulse:
         from aurum.tspulse_features import extract as tspulse_extract, \
             TSPULSE_FEATURES, N_TSPULSE_FEATURES
-        valid_lo = 512 - 1               # tspulse needs 512-bar context
-        anchors_full = np.arange(valid_lo, len(m5), dtype=np.int64)
-        X_ts = tspulse_extract(m5, anchors_full)
-        X = np.concatenate([X_full[valid_lo:], X_ts], axis=1).astype(np.float32)
+        valid_lo = max(valid_lo, 512 - 1)       # tspulse needs 512-bar ctx
+        log.info("[h7] +tspulse  (+%d features)", N_TSPULSE_FEATURES)
         feat_names = feat_names + list(TSPULSE_FEATURES)
-        log.info("[h7] tspulse features appended  (+%d, total=%d)",
-                 N_TSPULSE_FEATURES, X.shape[1])
+        extras.append(("tspulse", tspulse_extract))
+    if with_orderflow:
+        from aurum.orderflow_features import extract as orderflow_extract, \
+            ORDERFLOW_FEATURES, N_ORDERFLOW_FEATURES
+        valid_lo = max(valid_lo, 96)            # 96-bar rolling z-scores
+        log.info("[h7] +orderflow  (+%d features)", N_ORDERFLOW_FEATURES)
+        feat_names = feat_names + list(ORDERFLOW_FEATURES)
+        extras.append(("orderflow", orderflow_extract))
+
+    if extras:
+        anchors_full = np.arange(valid_lo, len(m5), dtype=np.int64)
+        parts = [X_full[valid_lo:]]
+        for tag, fn in extras:
+            parts.append(fn(m5, anchors_full))
+        X = np.concatenate(parts, axis=1).astype(np.float32)
+        log.info("[h7] feature stack: %d columns (%s)",
+                 X.shape[1], ", ".join(t for t, _ in extras))
     else:
         X = X_full
 
@@ -105,7 +120,7 @@ def train(max_bars: int | None, use_gpu: bool,
     prim = prim_full[valid_lo:]
     fwd  = fwd_full[valid_lo:]
     log.info("[h7] features=%d  meta-label pos rate=%.3f",
-             N_META_FEATURES, float(y.mean()))
+             X.shape[1], float(y.mean()))
 
     # ---- purged-CV: meta-gated strategy vs the raw primary (control) -----
     pk = PurgedKFold(n_splits=_N_SPLITS, horizon=LABEL_HORIZON,
@@ -150,9 +165,14 @@ def train(max_bars: int | None, use_gpu: bool,
     final.fit(X, y, sample_weight=w[y])
 
     _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    n_feat = X.shape[1]    # actual feature count (may include tspulse extras)
-    onnx_ok = _export_onnx(final, _ARTIFACT_DIR / "M4GOLD_METATREND_GOLD.onnx",
-                            n_features=n_feat)
+    n_feat = X.shape[1]    # actual feature count (may include extras)
+    # Research variants write to a tagged filename so they never overwrite
+    # the production 18-feature bundle the live EA reads.
+    suffix = ""
+    if with_tspulse: suffix += "_tspulse"
+    if with_orderflow: suffix += "_orderflow"
+    onnx_name = f"M4GOLD_METATREND_GOLD{suffix}.onnx"
+    onnx_ok = _export_onnx(final, _ARTIFACT_DIR / onnx_name, n_features=n_feat)
 
     spec = {
         "strategy": "METATREND",
@@ -160,8 +180,8 @@ def train(max_bars: int | None, use_gpu: bool,
         "version": "metatrend-1.0.0",
         "primary": {"type": "ema_cross", "fast": PRIMARY_EMA_FAST,
                     "slow": PRIMARY_EMA_SLOW},
-        "features": META_FEATURES,
-        "n_features": N_META_FEATURES,
+        "features": feat_names,
+        "n_features": n_feat,
         "label_horizon_bars": LABEL_HORIZON,
         "act_threshold": META_ACT_THRESHOLD,
         "cost_roundtrip": COST_ROUNDTRIP,
@@ -178,7 +198,7 @@ def train(max_bars: int | None, use_gpu: bool,
                  "min_fold_pf": _GATE_MIN_FOLD, "onnx_parity_ok": bool(onnx_ok)},
         "deploy": bool(deploy and onnx_ok),
     }
-    spec_path = _ARTIFACT_DIR / "M4GOLD_METATREND_GOLD_spec.json"
+    spec_path = _ARTIFACT_DIR / f"M4GOLD_METATREND_GOLD{suffix}_spec.json"
     spec_path.write_text(json.dumps(spec, indent=2))
     log.info("[h7] spec -> %s  (deploy=%s)", spec_path.name, spec["deploy"])
     return spec
@@ -227,9 +247,13 @@ def main(argv=None) -> int:
     p.add_argument("--use-gpu", action="store_true")
     p.add_argument("--with-tspulse", action="store_true",
                    help="append IBM TSPulse-derived features (ablation)")
+    p.add_argument("--with-orderflow", action="store_true",
+                   help="append tick-bar order-flow features (ablation)")
     args = p.parse_args(argv)
     t0 = time.time()
-    spec = train(args.max_bars, args.use_gpu, with_tspulse=args.with_tspulse)
+    spec = train(args.max_bars, args.use_gpu,
+                  with_tspulse=args.with_tspulse,
+                  with_orderflow=args.with_orderflow)
     log.info("[h7] done in %.0fs", time.time() - t0)
     return 0 if spec.get("deploy") else 0   # always 0 — non-deploy is a finding
 

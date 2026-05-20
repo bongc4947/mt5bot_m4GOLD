@@ -1,7 +1,14 @@
 # Iteration 6 — IBM Granite TSPulse-r1 as Meta-Gate Features
 
-> Honest ablation: does appending TSPulse-derived features to MetaTrend's
-> 18-feature set lift the leak-free purged-CV edge?
+> **Updated: 2026-05-20.** The original v1 ablation found a +0.034 PF
+> lift. While building the live EA wiring I discovered that
+> tspulse-r1's reconstruction head runs *random* time and FFT masking
+> at every forward pass, **even in eval mode** — the model is
+> non-deterministic by design. The v1 "lift" was the meta-gate learning
+> to average over that randomness, not a real signal. With the maskers
+> patched to deterministic pass-through (mandatory for live serving),
+> the lift disappears and tspulse becomes a mild **regression**. This
+> document keeps both results so the lesson sticks.
 
 ## Setup
 
@@ -17,47 +24,52 @@
 
 ## Result — full 174 k M5 bars
 
-| metric | baseline (18 feat) | **with tspulse (22 feat)** |
-|---|---|---|
-| meta meanPF | 1.406 | **1.440** |
-| raw primary PF (control) | 1.119 | 1.114 |
-| excess vs raw | +0.287 | **+0.326** |
-| min fold PF | 0.997 (one break-even) | **1.062** |
-| folds all-positive | 5 / 6 | **6 / 6** |
-| ONNX parity | 1.19 e-7 ✓ | 1.19 e-7 ✓ |
+| metric | baseline (18 feat) | tspulse v1 (random mask) | **tspulse v2 (deterministic)** |
+|---|---|---|---|
+| meta meanPF | 1.406 | 1.433 (noise-driven) | **1.355** |
+| raw primary PF (control) | 1.119 | 1.114 | 1.114 |
+| excess vs raw | +0.287 | +0.320 (noise-driven) | **+0.241** |
+| min fold PF | 0.997 | 1.021 | 0.979 |
+| folds all-positive | 5 / 6 | 6 / 6 | 5 / 6 |
+| reproducible same-input output | n/a | NO | YES |
+| ONNX parity (scalar level) | n/a | 1e-2 (loose) | **4e-7 (tight)** |
 
-**TSPulse modestly helps.** Headline PF gain is small (+0.034), but the
-structural improvement is real — every purged-CV fold now strongly
-positive, no break-even sub-period.
+**TSPulse is not deployable for this strategy.** Once we make the
+model deterministic — a hard requirement for live serving, since the
+EA cannot evaluate features that change between calls on the same M5
+bar — the lift disappears. Final call: **production stays on the
+18-feature baseline.**
 
-## What this does and does not mean
+## What we learned
 
-- **Does mean**: the four causal scalars derived from tspulse carry
-  information the 18-feature set didn't fully capture, in a way the
-  meta-gate can exploit. This is a real (if small) lift.
-- **Does NOT mean** "foundation TS model = silver bullet". The 30 k-bar
-  smoke run showed tspulse hurt slightly on a hostile sub-window. The
-  edge is *small and depends on having a large training set*.
+- **The model is stochastic by design.** `TSPulseForReconstruction`
+  runs random time-masking (`mask_ratio=0.7`) and FFT magnitude
+  masking on *every* forward call, even in `eval()` mode. That isn't a
+  bug — it's how the self-supervised masked-reconstruction objective
+  works at inference. But it means raw outputs vary by ~$1 on a $2000
+  GOLD price between consecutive calls on identical input.
+- **The noisy "lift" was the meta-gate learning to average over
+  randomness.** Training on a stochastic feature distribution lets the
+  meta-gate find robust decision regions; live serving picks one
+  sample of that distribution and gets a worse signal. Classical
+  train/serve gap, dressed up as a foundation-model win.
+- **Always check determinism before trusting a feature.** Run the same
+  input twice; if the output differs by more than float-rounding, you
+  have a problem.
 
 ## Deployment status
 
-The training-side experiment is **operational** (`train_h7_metatrend.py
---with-tspulse`) and the result is preserved here. The **production
-artifacts in `onnx_out/M4GOLD_METATREND_GOLD.*` remain the 18-feature
-version** (PF 1.406) — same as the bundle already staged in MT5 Common
-Files. Deploying the tspulse variant requires additional MT5-side work:
-
-- Export tspulse-r1 to ONNX (the model already has a sister ONNX repo
-  `onnx-community/granite-timeseries-patchtst` — tspulse needs separate
-  conversion).
-- Load it inside MT5 alongside the meta-gate ONNX.
-- Implement the 4 tspulse features in `MetaGate.mqh` (calls the tspulse
-  ONNX on the past-512-close window per M5 decision bar).
-- Train/serve parity test.
-
-That is a real ~2-3 hour build with operational complexity (a second
-ONNX model in the live EA, 512-bar context per inference). Whether it's
-worth +0.034 PF for the extra moving part is a deployment judgement.
+- Production artifacts in `onnx_out/M4GOLD_METATREND_GOLD.*` remain
+  the **18-feature baseline** (PF 1.406).
+- The EA wiring is in place (auto-detects `n_features` from the spec
+  and loads `M4GOLD_TSPULSE_GOLD.onnx` only for the 22-feature
+  variant) — see [ea/includes/MetaGate.mqh](ea/includes/MetaGate.mqh).
+  It is dormant code: useful capability for any future foundation-TS
+  experiment, but not active in the shipping bundle.
+- `python/export_tspulse_onnx.py` patches the time and FFT maskers to
+  pass-through before tracing, then verifies bit-stable scalar parity.
+  This is the right starting point if a future TS foundation model
+  *is* deterministic in eval.
 
 ## Reproduce
 

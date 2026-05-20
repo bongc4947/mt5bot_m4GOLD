@@ -3,31 +3,44 @@
 //|                                                                    |
 //| The validated GOLD edge (docs/RESEARCH_FINDINGS.md): a slow EMA    |
 //| 50/200 cross supplies the trade DIRECTION; an XGBoost meta-gate    |
-//| (ONNX) decides WHEN to trust it. Net PF ~1.41 under leak-free      |
-//| purged CV, 5/6 folds strongly positive.                            |
+//| (ONNX) decides WHEN to trust it.                                   |
 //|                                                                    |
-//| The 18-feature vector built here MUST match python/aurum/          |
-//| metatrend.py::build_features bit-for-bit - train/serve parity.     |
+//| Two production variants, auto-detected from the spec's n_features: |
+//|   18-feature  base MetaTrend          PF 1.41, 5/6 folds positive   |
+//|   22-feature  MetaTrend + tspulse-r1  PF 1.43, 6/6 folds positive   |
+//|                                                                    |
+//| When n_features == 22 we additionally load M4GOLD_TSPULSE_GOLD.onnx |
+//| and compute four causal scalars from the past 512 M5 closes - the   |
+//| same math as python/aurum/tspulse_features.py so train/serve parity |
+//| is exact (training uses the SAME ONNX via backend='onnx').          |
 //|                                                                    |
 //| Bundle (MT5 Common Files):                                         |
-//|   M4GOLD_METATREND_GOLD.onnx        meta-gate  float[1,18]->[1,2]  |
-//|   M4GOLD_METATREND_GOLD_spec.json   threshold + deploy flag        |
+//|   M4GOLD_METATREND_GOLD.onnx        meta-gate  float[1,N]->[1,2]    |
+//|   M4GOLD_METATREND_GOLD_spec.json   threshold + deploy + n_features |
+//|   M4GOLD_TSPULSE_GOLD.onnx          OPTIONAL - only for 22-feat run |
 //+------------------------------------------------------------------+
 #ifndef METAGATE_MQH
 #define METAGATE_MQH
 
-// ---- constants - mirror python/aurum/metatrend.py -------------------
-#define MG_EMA_FAST     50
-#define MG_EMA_SLOW     200
-#define MG_N_FEATURES   18
-#define MG_HISTORY      1500     // closed M5 bars pulled (EMA200 converges)
+// ---- constants - mirror python/aurum/metatrend.py + tspulse ---------
+#define MG_EMA_FAST      50
+#define MG_EMA_SLOW      200
+#define MG_N_BASE        18
+#define MG_N_TSPULSE     4
+#define MG_N_MAX         22       // 18 base + 4 tspulse
+#define MG_HISTORY       1500     // closed M5 bars pulled (EMA200 converges)
+#define MG_TSP_CTX       512      // tspulse context length
+#define MG_TSP_HORIZON   16       // tspulse forecast horizon
+#define MG_TSP_FFT_BINS  256      // FFT softmax bins
 
 // ---- agent state ----------------------------------------------------
-long   g_mg_handle   = INVALID_HANDLE;
-bool   g_mg_ready    = false;
-bool   g_mg_deploy   = false;
-double g_mg_actthr   = 0.55;
-string g_mg_version  = "";
+long   g_mg_handle    = INVALID_HANDLE;    // meta-gate XGBoost ONNX
+long   g_mg_tsp_handle= INVALID_HANDLE;    // tspulse ONNX (only if 22-feat)
+bool   g_mg_ready     = false;
+bool   g_mg_deploy    = false;
+double g_mg_actthr    = 0.55;
+string g_mg_version   = "";
+int    g_mg_nfeat     = MG_N_BASE;         // 18 or 22, set from spec
 
 //+------------------------------------------------------------------+
 //| Minimal JSON helpers (spec is single-byte ASCII - FILE_ANSI).     |
@@ -78,7 +91,47 @@ string _MGJsonStr(const string js, const string key)
 }
 
 //+------------------------------------------------------------------+
-//| Load the meta-gate ONNX + spec.                                   |
+//| Configure the meta-gate ONNX shapes (depends on n_features).      |
+//+------------------------------------------------------------------+
+void _MGConfigureGateShape(int nfeat)
+{
+   ulong in_shape[]  = {1, 0};
+   in_shape[1] = (ulong)nfeat;
+   ulong lbl_shape[] = {1};
+   ulong prb_shape[] = {1, 2};
+   OnnxSetInputShape (g_mg_handle, 0, in_shape);
+   OnnxSetOutputShape(g_mg_handle, 0, lbl_shape);
+   OnnxSetOutputShape(g_mg_handle, 1, prb_shape);
+}
+
+//+------------------------------------------------------------------+
+//| Try to load the tspulse ONNX (only used when n_features == 22).   |
+//| Returns true on success.                                          |
+//+------------------------------------------------------------------+
+bool _MGInitTspulse()
+{
+   g_mg_tsp_handle = OnnxCreate("M4GOLD_TSPULSE_GOLD.onnx", ONNX_COMMON_FOLDER);
+   if(g_mg_tsp_handle == INVALID_HANDLE)
+   {
+      Print("[MetaGate] M4GOLD_TSPULSE_GOLD.onnx missing - 22-feature "
+            "variant cannot run without it.");
+      return false;
+   }
+   ulong in_shape[]    = {1, MG_TSP_CTX, 1};
+   ulong fcst_shape[]  = {1, MG_TSP_HORIZON, 1};
+   ulong recon_shape[] = {1, MG_TSP_CTX, 1};
+   ulong fft_shape[]   = {1, MG_TSP_FFT_BINS, 1};
+   OnnxSetInputShape (g_mg_tsp_handle, 0, in_shape);
+   OnnxSetOutputShape(g_mg_tsp_handle, 0, fcst_shape);   // forecast
+   OnnxSetOutputShape(g_mg_tsp_handle, 1, recon_shape);  // reconstruction
+   OnnxSetOutputShape(g_mg_tsp_handle, 2, fft_shape);    // obs_fft
+   OnnxSetOutputShape(g_mg_tsp_handle, 3, fft_shape);    // pred_fft
+   Print("[MetaGate] tspulse ONNX loaded - 22-feature mode active.");
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Load the meta-gate ONNX + spec. Auto-detects 18-/22-feature mode. |
 //+------------------------------------------------------------------+
 bool MG_Init()
 {
@@ -88,14 +141,6 @@ bool MG_Init()
       Print("[MetaGate] M4GOLD_METATREND_GOLD.onnx not found in Common Files.");
       return false;
    }
-   // XGBoost ONNX: 1 input float[1,18], 2 outputs (label int64[1] +
-   // probabilities float[1,2]). Both output shapes must be declared.
-   ulong in_shape[]  = {1, MG_N_FEATURES};
-   ulong lbl_shape[] = {1};
-   ulong prb_shape[] = {1, 2};
-   OnnxSetInputShape (g_mg_handle, 0, in_shape);
-   OnnxSetOutputShape(g_mg_handle, 0, lbl_shape);
-   OnnxSetOutputShape(g_mg_handle, 1, prb_shape);
 
    int h = FileOpen("M4GOLD_METATREND_GOLD_spec.json",
                     FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
@@ -107,6 +152,15 @@ bool MG_Init()
       g_mg_actthr  = _MGJsonNum(js, "act_threshold", 0.55);
       g_mg_deploy  = _MGJsonBool(js, "deploy");
       g_mg_version = _MGJsonStr(js, "version");
+      int spec_n   = (int)_MGJsonNum(js, "n_features", MG_N_BASE);
+      if(spec_n == MG_N_BASE || spec_n == MG_N_MAX)
+         g_mg_nfeat = spec_n;
+      else
+      {
+         PrintFormat("[MetaGate] *** unsupported n_features=%d - falling back to %d",
+                     spec_n, MG_N_BASE);
+         g_mg_nfeat = MG_N_BASE;
+      }
       if(StringFind(js, "\"strategy\"") < 0)
          Print("[MetaGate] *** WRONG SPEC FILE *** - no strategy key.");
    }
@@ -114,16 +168,32 @@ bool MG_Init()
       Print("[MetaGate] *** SPEC MISSING *** - M4GOLD_METATREND_GOLD_spec.json "
             "not in Common Files.");
 
+   _MGConfigureGateShape(g_mg_nfeat);
+
+   if(g_mg_nfeat == MG_N_MAX)
+   {
+      if(!_MGInitTspulse())
+      {
+         // can't run 22-feature mode without tspulse - fall back to 18
+         PrintFormat("[MetaGate] *** falling back to 18-feature mode - "
+                     "but gate ONNX expects %d inputs. Re-train without "
+                     "--with-tspulse OR ship the tspulse ONNX.", g_mg_nfeat);
+         g_mg_nfeat = MG_N_BASE;
+         _MGConfigureGateShape(g_mg_nfeat);
+      }
+   }
+
    g_mg_ready = true;
-   PrintFormat("[MetaGate] ready  version=%s  deploy=%s  act_thr=%.2f",
+   PrintFormat("[MetaGate] ready  version=%s  deploy=%s  act_thr=%.2f  nfeat=%d",
                g_mg_version == "" ? "?" : g_mg_version,
-               g_mg_deploy ? "true" : "false", g_mg_actthr);
+               g_mg_deploy ? "true" : "false", g_mg_actthr, g_mg_nfeat);
    return true;
 }
 
 void MG_Release()
 {
-   if(g_mg_handle != INVALID_HANDLE) OnnxRelease(g_mg_handle);
+   if(g_mg_handle     != INVALID_HANDLE) OnnxRelease(g_mg_handle);
+   if(g_mg_tsp_handle != INVALID_HANDLE) OnnxRelease(g_mg_tsp_handle);
    g_mg_ready = false;
 }
 
@@ -156,12 +226,90 @@ double _MG_RetStd(const double &cls[], int last, int w)
 }
 
 //+------------------------------------------------------------------+
-//| Build the 18-feature vector. CLOSED bars only (shift 1). Returns  |
-//| false if history is insufficient. Mirrors metatrend.build_features|
+//| Run tspulse on the past 512 closed M5 closes and pack the four    |
+//| causal scalars into f_out[0..3] (in TSPULSE_FEATURES order).      |
+//| Returns false if anything fails - caller falls back / aborts.     |
+//|                                                                    |
+//| Math mirrors python/aurum/tspulse_features.py::extract.            |
+//+------------------------------------------------------------------+
+bool _MG_TspulseFeatures(const double &cls[], int last, float &f_out[])
+{
+   if(g_mg_tsp_handle == INVALID_HANDLE) return false;
+   if(last < MG_TSP_CTX - 1) return false;
+
+   // Build input float[1*512*1] flat - last MG_TSP_CTX closed bars
+   float past[];
+   ArrayResize(past, MG_TSP_CTX);
+   for(int i = 0; i < MG_TSP_CTX; i++)
+      past[i] = (float)cls[last - MG_TSP_CTX + 1 + i];
+
+   float fcst[]; ArrayResize(fcst, MG_TSP_HORIZON);
+   float recon[]; ArrayResize(recon, MG_TSP_CTX);
+   float obs[];   ArrayResize(obs,   MG_TSP_FFT_BINS);
+   float prd[];   ArrayResize(prd,   MG_TSP_FFT_BINS);
+   if(!OnnxRun(g_mg_tsp_handle, ONNX_DEFAULT, past, fcst, recon, obs, prd))
+   {
+      PrintFormat("[MetaGate] tspulse OnnxRun failed: %d", GetLastError());
+      return false;
+   }
+
+   double eps = 1e-12;
+   double last_close = past[MG_TSP_CTX - 1];
+   double last_fcst  = fcst[MG_TSP_HORIZON - 1];
+
+   // atr_proxy: std of 1-bar diffs of the input window. numpy.std default
+   // ddof=0 - divide by N, not N-1. Matches tspulse_features.py exactly.
+   int n_d = MG_TSP_CTX - 1;
+   double mu = 0;
+   for(int i = 1; i < MG_TSP_CTX; i++) mu += (past[i] - past[i-1]);
+   mu /= (double)n_d;
+   double var = 0;
+   for(int i = 1; i < MG_TSP_CTX; i++)
+   {
+      double d = (past[i] - past[i-1]) - mu;
+      var += d * d;
+   }
+   double atr_proxy = MathSqrt(var / (double)n_d) + eps;
+
+   double net_logret = MathLog(MathMax(last_fcst, eps) /
+                                MathMax(last_close, eps));
+   double fwd_mag    = MathAbs(last_fcst - last_close) / atr_proxy;
+
+   double recon_err = 0;
+   for(int i = 0; i < MG_TSP_CTX; i++)
+   {
+      double d = recon[i] - past[i];
+      recon_err += d * d;
+   }
+   recon_err /= (double)MG_TSP_CTX;
+
+   double fft_div = 0;
+   for(int i = 0; i < MG_TSP_FFT_BINS; i++)
+   {
+      double o = obs[i], p = prd[i];
+      fft_div += o * (MathLog(o + eps) - MathLog(p + eps));
+   }
+
+   f_out[0] = (float)net_logret;
+   f_out[1] = (float)fwd_mag;
+   f_out[2] = (float)recon_err;
+   f_out[3] = (float)fft_div;
+   // sanitise - tspulse can produce inf/nan on degenerate windows
+   for(int i = 0; i < MG_N_TSPULSE; i++)
+   {
+      if(!MathIsValidNumber(f_out[i])) f_out[i] = 0.0f;
+   }
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Build the meta-gate feature vector (18 base + optional 4 tspulse).|
+//| CLOSED bars only (shift 1). Returns false if history is short.    |
+//| Mirrors python/aurum/metatrend.py::build_features (+ tspulse).    |
 //+------------------------------------------------------------------+
 bool MG_BuildFeatures(float &f[])
 {
-   ArrayResize(f, MG_N_FEATURES);
+   ArrayResize(f, g_mg_nfeat);
    MqlRates r[];
    int got = CopyRates(_Symbol, PERIOD_M5, 1, MG_HISTORY, r);  // shift 1 = closed
    if(got < 320) return false;                                  // need 288 + slack
@@ -231,7 +379,6 @@ bool MG_BuildFeatures(float &f[])
    double bars_since_lo96 = (double)(last-arg_lo) / 96.0;
 
    // --- trend age: bars since the EMA fast/slow cross, /200 capped ---
-   //     recompute the EMA pair forward, track the last flip.
    double kf = 2.0/(MG_EMA_FAST+1.0), ks = 2.0/(MG_EMA_SLOW+1.0);
    double e_f = cls[0], e_s = cls[0];
    int prev_dir = 0, age = 0, last_flip_age = 0;
@@ -263,7 +410,7 @@ bool MG_BuildFeatures(float &f[])
    double hod_sin = MathSin(2.0*M_PI*hod/24.0);
    double hod_cos = MathCos(2.0*M_PI*hod/24.0);
 
-   // --- pack in the exact META_FEATURES order ---
+   // --- pack the 18 base features in the exact META_FEATURES order ---
    f[0]=(float)ret12;          f[1]=(float)ret48;          f[2]=(float)ret96;
    f[3]=(float)(atr14/MathMax(c,eps)); f[4]=(float)(atr48/MathMax(c,eps));
    f[5]=(float)rv24;           f[6]=(float)rv96;
@@ -272,6 +419,15 @@ bool MG_BuildFeatures(float &f[])
    f[12]=(float)bars_since_hi96; f[13]=(float)bars_since_lo96;
    f[14]=(float)trend_age;     f[15]=(float)up_streak;
    f[16]=(float)hod_sin;       f[17]=(float)hod_cos;
+
+   // --- append tspulse scalars if running the 22-feature variant ---
+   if(g_mg_nfeat == MG_N_MAX)
+   {
+      if(n < MG_TSP_CTX) return false;       // need 512 closed bars
+      float ts[];  ArrayResize(ts, MG_N_TSPULSE);
+      if(!_MG_TspulseFeatures(cls, last, ts)) return false;
+      f[18] = ts[0]; f[19] = ts[1]; f[20] = ts[2]; f[21] = ts[3];
+   }
    return true;
 }
 
