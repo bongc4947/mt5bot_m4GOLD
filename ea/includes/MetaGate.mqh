@@ -32,11 +32,17 @@
 #define MG_TSP_CTX       512      // tspulse context length
 #define MG_TSP_HORIZON   16       // tspulse forecast horizon
 #define MG_TSP_FFT_BINS  256      // FFT softmax bins
+// Quantile heads (v1.20) - 7 single-output XGBRegressor ONNX models
+#define MG_N_QUANTILES   7
+const string MG_Q_NAMES[MG_N_QUANTILES] = {"q05","q10","q25","q50","q75","q90","q95"};
+const double MG_Q_ALPHAS[MG_N_QUANTILES] = {0.05,0.10,0.25,0.50,0.75,0.90,0.95};
 
 // ---- agent state ----------------------------------------------------
 long   g_mg_handle    = INVALID_HANDLE;    // meta-gate XGBoost ONNX
 long   g_mg_tsp_handle= INVALID_HANDLE;    // tspulse ONNX (only if 22-feat)
+long   g_mg_q_handles[MG_N_QUANTILES];     // 7 quantile ONNX handles
 bool   g_mg_ready     = false;
+bool   g_mg_q_ready   = false;             // true iff all 7 quantile ONNX loaded
 bool   g_mg_deploy    = false;
 double g_mg_actthr    = 0.55;
 string g_mg_version   = "";
@@ -131,6 +137,35 @@ bool _MGInitTspulse()
 }
 
 //+------------------------------------------------------------------+
+//| Try to load the 7 quantile-head ONNX models. Sets g_mg_q_ready.   |
+//| If any one is missing the quantile gate is disabled (graceful     |
+//| fallback to baseline behaviour).                                  |
+//+------------------------------------------------------------------+
+bool _MGInitQuantiles()
+{
+   ulong in_shape[]  = {1, 0};
+   in_shape[1] = (ulong)MG_N_BASE;       // quantile heads use the 18-feat set
+   ulong out_shape[] = {1, 1};
+   for(int i = 0; i < MG_N_QUANTILES; i++)
+   {
+      string fn = "M4GOLD_QUANTILE_" + MG_Q_NAMES[i] + "_GOLD.onnx";
+      g_mg_q_handles[i] = OnnxCreate(fn, ONNX_COMMON_FOLDER);
+      if(g_mg_q_handles[i] == INVALID_HANDLE)
+      {
+         PrintFormat("[MetaGate] quantile ONNX %s missing - disabling quantile gate.", fn);
+         // release any that loaded
+         for(int j = 0; j < i; j++) if(g_mg_q_handles[j] != INVALID_HANDLE) OnnxRelease(g_mg_q_handles[j]);
+         for(int j = 0; j < MG_N_QUANTILES; j++) g_mg_q_handles[j] = INVALID_HANDLE;
+         return false;
+      }
+      OnnxSetInputShape (g_mg_q_handles[i], 0, in_shape);
+      OnnxSetOutputShape(g_mg_q_handles[i], 0, out_shape);
+   }
+   PrintFormat("[MetaGate] 7 quantile heads loaded - distributional forecast active.");
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| Load the meta-gate ONNX + spec. Auto-detects 18-/22-feature mode. |
 //+------------------------------------------------------------------+
 bool MG_Init()
@@ -183,10 +218,15 @@ bool MG_Init()
       }
    }
 
+   // optional: 7-quantile distributional forecast (graceful if missing)
+   for(int i = 0; i < MG_N_QUANTILES; i++) g_mg_q_handles[i] = INVALID_HANDLE;
+   g_mg_q_ready = _MGInitQuantiles();
+
    g_mg_ready = true;
-   PrintFormat("[MetaGate] ready  version=%s  deploy=%s  act_thr=%.2f  nfeat=%d",
+   PrintFormat("[MetaGate] ready  version=%s  deploy=%s  act_thr=%.2f  nfeat=%d  quantiles=%s",
                g_mg_version == "" ? "?" : g_mg_version,
-               g_mg_deploy ? "true" : "false", g_mg_actthr, g_mg_nfeat);
+               g_mg_deploy ? "true" : "false", g_mg_actthr, g_mg_nfeat,
+               g_mg_q_ready ? "ON" : "off");
    return true;
 }
 
@@ -194,7 +234,10 @@ void MG_Release()
 {
    if(g_mg_handle     != INVALID_HANDLE) OnnxRelease(g_mg_handle);
    if(g_mg_tsp_handle != INVALID_HANDLE) OnnxRelease(g_mg_tsp_handle);
+   for(int i = 0; i < MG_N_QUANTILES; i++)
+      if(g_mg_q_handles[i] != INVALID_HANDLE) OnnxRelease(g_mg_q_handles[i]);
    g_mg_ready = false;
+   g_mg_q_ready = false;
 }
 
 //+------------------------------------------------------------------+
@@ -460,6 +503,47 @@ double MG_ActProb()
    float prob[]; ArrayResize(prob, 2);
    if(!OnnxRun(g_mg_handle, ONNX_DEFAULT, f, lbl, prob)) return -1.0;
    return (double)prob[1];        // P(class 1 = act)
+}
+
+//+------------------------------------------------------------------+
+//| Run the 7 quantile-head ONNX models on the current 18-feature    |
+//| vector. Fills q_out[0..6] with the predicted log-return at        |
+//| q05, q10, q25, q50, q75, q90, q95. Applies a sort-based isotonic |
+//| correction so the row is non-decreasing (cheap fix for the well- |
+//| known multi-quantile crossing issue).                             |
+//|                                                                   |
+//| Returns false if quantile gate is disabled or any head fails.    |
+//+------------------------------------------------------------------+
+bool MG_QuantileForecast(double &q_out[])
+{
+   ArrayResize(q_out, MG_N_QUANTILES);
+   if(!g_mg_q_ready) return false;
+   // build only the 18 base features (quantile heads were trained on those)
+   float f[]; ArrayResize(f, MG_N_BASE);
+   int saved_n = g_mg_nfeat;
+   g_mg_nfeat = MG_N_BASE;
+   bool ok = MG_BuildFeatures(f);
+   g_mg_nfeat = saved_n;
+   if(!ok) return false;
+   for(int i = 0; i < MG_N_QUANTILES; i++)
+   {
+      float out[]; ArrayResize(out, 1);
+      if(!OnnxRun(g_mg_q_handles[i], ONNX_DEFAULT, f, out))
+      {
+         PrintFormat("[MetaGate] quantile head %s OnnxRun failed: %d",
+                     MG_Q_NAMES[i], GetLastError());
+         return false;
+      }
+      q_out[i] = (double)out[0];
+   }
+   // isotonic fix: sort ascending so q05 <= q10 <= ... <= q95
+   for(int i = 0; i < MG_N_QUANTILES - 1; i++)
+      for(int j = i + 1; j < MG_N_QUANTILES; j++)
+         if(q_out[j] < q_out[i])
+         {
+            double t = q_out[i]; q_out[i] = q_out[j]; q_out[j] = t;
+         }
+   return true;
 }
 
 #endif // METAGATE_MQH
