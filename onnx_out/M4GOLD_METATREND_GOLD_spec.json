@@ -1,0 +1,63 @@
+{
+  "strategy": "METATREND",
+  "symbol": "GOLD",
+  "version": "metatrend-1.0.0",
+  "primary": {
+    "type": "ema_cross",
+    "fast": 50,
+    "slow": 200
+  },
+  "features": [
+    "ret12",
+    "ret48",
+    "ret96",
+    "atr14_norm",
+    "atr48_norm",
+    "rv24",
+    "rv96",
+    "pos96",
+    "pos288",
+    "ema_fast_dist",
+    "ema_slow_dist",
+    "ema_gap",
+    "bars_since_hi96",
+    "bars_since_lo96",
+    "trend_age",
+    "up_streak",
+    "hod_sin",
+    "hod_cos",
+    "dist_to_sup_atr",
+    "dist_to_res_atr",
+    "sup_strength",
+    "res_strength",
+    "dist_to_nearest_fib_atr",
+    "in_sr_zone"
+  ],
+  "n_features": 24,
+  "label_horizon_bars": 240,
+  "act_threshold": 0.55,
+  "cost_roundtrip": 0.00018,
+  "cv": {
+    "meta_mean_pf": 1.4454,
+    "raw_mean_pf": 1.0935,
+    "excess_vs_raw": 0.352,
+    "meta_pf_folds": [
+      1.446,
+      0.969,
+      1.433,
+      1.469,
+      1.782,
+      1.574
+    ],
+    "min_fold_pf": 0.969,
+    "all_folds_positive": false,
+    "mean_trades_per_fold": 10459
+  },
+  "gate": {
+    "min_pf": 1.15,
+    "min_excess_vs_raw": 0.05,
+    "min_fold_pf": 0.92,
+    "onnx_parity_ok": true
+  },
+  "deploy": true
+}
