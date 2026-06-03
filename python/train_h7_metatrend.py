@@ -71,7 +71,8 @@ def _make_xgb(use_gpu: bool):
 
 def train(max_bars: int | None, use_gpu: bool,
           with_tspulse: bool = False,
-          with_orderflow: bool = False) -> dict:
+          with_orderflow: bool = False,
+          with_sr_fib: bool = False) -> dict:
     from aurum.datamodule import _load_m5_bars
 
     m5 = _load_m5_bars()
@@ -104,6 +105,14 @@ def train(max_bars: int | None, use_gpu: bool,
         log.info("[h7] +orderflow  (+%d features)", N_ORDERFLOW_FEATURES)
         feat_names = feat_names + list(ORDERFLOW_FEATURES)
         extras.append(("orderflow", orderflow_extract))
+    if with_sr_fib:
+        from aurum.sr_fib_features import extract as sr_extract, \
+            SR_FIB_FEATURES, N_SR_FIB_FEATURES
+        # S/R needs at least 21 days of history to populate level clusters
+        valid_lo = max(valid_lo, 24 * 21 * 12)
+        log.info("[h7] +sr_fib  (+%d features)", N_SR_FIB_FEATURES)
+        feat_names = feat_names + list(SR_FIB_FEATURES)
+        extras.append(("sr_fib", sr_extract))
 
     if extras:
         anchors_full = np.arange(valid_lo, len(m5), dtype=np.int64)
@@ -171,6 +180,7 @@ def train(max_bars: int | None, use_gpu: bool,
     suffix = ""
     if with_tspulse: suffix += "_tspulse"
     if with_orderflow: suffix += "_orderflow"
+    if with_sr_fib: suffix += "_srfib"
     onnx_name = f"M4GOLD_METATREND_GOLD{suffix}.onnx"
     onnx_ok = _export_onnx(final, _ARTIFACT_DIR / onnx_name, n_features=n_feat)
 
@@ -249,11 +259,14 @@ def main(argv=None) -> int:
                    help="append IBM TSPulse-derived features (ablation)")
     p.add_argument("--with-orderflow", action="store_true",
                    help="append tick-bar order-flow features (ablation)")
+    p.add_argument("--with-sr-fib", action="store_true",
+                   help="append S/R level + Fibonacci retracement features (ablation)")
     args = p.parse_args(argv)
     t0 = time.time()
     spec = train(args.max_bars, args.use_gpu,
                   with_tspulse=args.with_tspulse,
-                  with_orderflow=args.with_orderflow)
+                  with_orderflow=args.with_orderflow,
+                  with_sr_fib=args.with_sr_fib)
     log.info("[h7] done in %.0fs", time.time() - t0)
     return 0 if spec.get("deploy") else 0   # always 0 — non-deploy is a finding
 

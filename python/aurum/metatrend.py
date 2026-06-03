@@ -147,15 +147,16 @@ def build_features(m5: pd.DataFrame) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Meta-label — "would following the primary over LABEL_HORIZON have won?"
 # ---------------------------------------------------------------------------
-def build_meta_label(m5: pd.DataFrame) -> dict:
+def build_meta_label(m5: pd.DataFrame, horizon: int | None = None) -> dict:
+    """`horizon` overrides the module-level LABEL_HORIZON when set."""
+    H = LABEL_HORIZON if horizon is None else horizon
     c = m5["close"].to_numpy(np.float64)
     n = len(c)
     eps = 1e-12
     fwd = np.zeros(n)
-    fwd[:n - LABEL_HORIZON] = np.log(
-        np.clip(c[LABEL_HORIZON:], eps, None)
-        / np.clip(c[:n - LABEL_HORIZON], eps, None))
+    fwd[:n - H] = np.log(
+        np.clip(c[H:], eps, None) / np.clip(c[:n - H], eps, None))
     prim = primary_signal(c)
     # net of cost — a trade only counts as a win if it beats the spread
     y = ((prim * fwd - COST_ROUNDTRIP) > 0).astype(np.int64)
-    return {"y": y, "primary": prim, "fwd_ret": fwd}
+    return {"y": y, "primary": prim, "fwd_ret": fwd, "horizon": H}

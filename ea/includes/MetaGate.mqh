@@ -22,12 +22,15 @@
 #ifndef METAGATE_MQH
 #define METAGATE_MQH
 
-// ---- constants - mirror python/aurum/metatrend.py + tspulse ---------
+// ---- constants - mirror python/aurum/metatrend.py + tspulse + sr_fib --
 #define MG_EMA_FAST      50
 #define MG_EMA_SLOW      200
 #define MG_N_BASE        18
 #define MG_N_TSPULSE     4
-#define MG_N_MAX         22       // 18 base + 4 tspulse
+#define MG_N_SR_FIB      6
+#define MG_N_TSP_MODE    22       // 18 base + 4 tspulse
+#define MG_N_SR_MODE     24       // 18 base + 6 sr_fib   <-- v1.30
+#define MG_N_MAX         24       // currently max-supported variant
 #define MG_HISTORY       1500     // closed M5 bars pulled (EMA200 converges)
 #define MG_TSP_CTX       512      // tspulse context length
 #define MG_TSP_HORIZON   16       // tspulse forecast horizon
@@ -36,6 +39,16 @@
 #define MG_N_QUANTILES   7
 const string MG_Q_NAMES[MG_N_QUANTILES] = {"q05","q10","q25","q50","q75","q90","q95"};
 const double MG_Q_ALPHAS[MG_N_QUANTILES] = {0.05,0.10,0.25,0.50,0.75,0.90,0.95};
+// sr_fib v1.30 - mirror python/aurum/sr_fib_features.py constants exactly
+#define MG_SR_PIP_USD        0.10
+#define MG_SR_MIN_SWING_USD  4.0      // 40 pips * 0.10
+#define MG_SR_SWING_N        8        // fractal H1 lookback/forward
+#define MG_SR_CLUSTER_USD    3.0      // 30 pips * 0.10
+#define MG_SR_MAX_LEVELS     6
+#define MG_SR_LOOKBACK_H     504      // 21 days of H1 (24*21)
+#define MG_SR_ZONE_ATR       0.75
+#define MG_SR_DIST_CAP_ATR   3.0
+#define MG_SR_H1_PULL        520      // CopyRates count: lookback + swing_n + slack
 
 // ---- agent state ----------------------------------------------------
 long   g_mg_handle    = INVALID_HANDLE;    // meta-gate XGBoost ONNX
@@ -188,7 +201,7 @@ bool MG_Init()
       g_mg_deploy  = _MGJsonBool(js, "deploy");
       g_mg_version = _MGJsonStr(js, "version");
       int spec_n   = (int)_MGJsonNum(js, "n_features", MG_N_BASE);
-      if(spec_n == MG_N_BASE || spec_n == MG_N_MAX)
+      if(spec_n == MG_N_BASE || spec_n == MG_N_TSP_MODE || spec_n == MG_N_SR_MODE)
          g_mg_nfeat = spec_n;
       else
       {
@@ -205,17 +218,23 @@ bool MG_Init()
 
    _MGConfigureGateShape(g_mg_nfeat);
 
-   if(g_mg_nfeat == MG_N_MAX)
+   if(g_mg_nfeat == MG_N_TSP_MODE)
    {
       if(!_MGInitTspulse())
       {
-         // can't run 22-feature mode without tspulse - fall back to 18
          PrintFormat("[MetaGate] *** falling back to 18-feature mode - "
                      "but gate ONNX expects %d inputs. Re-train without "
                      "--with-tspulse OR ship the tspulse ONNX.", g_mg_nfeat);
          g_mg_nfeat = MG_N_BASE;
          _MGConfigureGateShape(g_mg_nfeat);
       }
+   }
+   else if(g_mg_nfeat == MG_N_SR_MODE)
+   {
+      // sr_fib variant - no extra ONNX needed, all computed in MQL5
+      PrintFormat("[MetaGate] 24-feature mode (S/R+Fib) active - "
+                  "min_swing=$%.1f, swing_n=%d, lookback=%dh",
+                  MG_SR_MIN_SWING_USD, MG_SR_SWING_N, MG_SR_LOOKBACK_H);
    }
 
    // optional: 7-quantile distributional forecast (graceful if missing)
@@ -346,9 +365,293 @@ bool _MG_TspulseFeatures(const double &cls[], int last, float &f_out[])
 }
 
 //+------------------------------------------------------------------+
-//| Build the meta-gate feature vector (18 base + optional 4 tspulse).|
-//| CLOSED bars only (shift 1). Returns false if history is short.    |
-//| Mirrors python/aurum/metatrend.py::build_features (+ tspulse).    |
+//| S/R + Fibonacci feature builder - v1.30                           |
+//|                                                                    |
+//| Mirrors python/aurum/sr_fib_features.py exactly:                   |
+//|   1. detect H1 fractal swings (n=8 lookback/forward)               |
+//|   2. confirm each swing only AFTER n bars forward (causal)         |
+//|   3. filter to last LOOKBACK hours                                 |
+//|   4. drop swings whose move from prior opposite < MIN_SWING_USD    |
+//|   5. greedy 1D cluster: support prices, resistance prices          |
+//|   6. compute 6 features:                                           |
+//|        dist_to_sup_atr     dist_to_res_atr                         |
+//|        sup_strength        res_strength                            |
+//|        dist_to_nearest_fib_atr   in_sr_zone                        |
+//|   All distances capped at DIST_CAP_ATR.                            |
+//+------------------------------------------------------------------+
+
+// internal arrays - module-scope so we don't reallocate every call
+double _g_swing_px[400];
+int    _g_swing_kind[400];   // 0 = Low, 1 = High
+int    _g_n_swings = 0;
+
+// Detect H1 fractal swings in `h1` and write to internal swing arrays.
+// A bar i is a swing HIGH if h1[i].high >= max(highs in i-n..i+n) and is
+// strictly greater than at least one neighbour. Symmetric for LOW.
+// We require i+n <= last-1 so the swing is causally confirmed.
+void _MG_DetectSwings(const MqlRates &h1[], int n_lookback)
+{
+   _g_n_swings = 0;
+   int n = ArraySize(h1);
+   if(n < 2 * n_lookback + 2) return;
+   // last bar that can be confirmed: must have n_lookback forward bars
+   int last_confirmable = n - n_lookback - 1;
+   for(int i = n_lookback; i <= last_confirmable; i++)
+   {
+      double pi_h = h1[i].high, pi_l = h1[i].low;
+      // SWING HIGH
+      bool is_high = true;
+      bool strict_left = false, strict_right = false;
+      for(int k = i - n_lookback; k <= i + n_lookback; k++)
+      {
+         if(k == i) continue;
+         if(h1[k].high > pi_h) { is_high = false; break; }
+         if(h1[k].high < pi_h) { if(k < i) strict_left = true; else strict_right = true; }
+      }
+      if(is_high && (strict_left || strict_right))
+      {
+         if(_g_n_swings < 400)
+         {
+            _g_swing_px[_g_n_swings]   = pi_h;
+            _g_swing_kind[_g_n_swings] = 1;
+            _g_n_swings++;
+         }
+      }
+      // SWING LOW
+      bool is_low = true;
+      strict_left = false; strict_right = false;
+      for(int k = i - n_lookback; k <= i + n_lookback; k++)
+      {
+         if(k == i) continue;
+         if(h1[k].low < pi_l) { is_low = false; break; }
+         if(h1[k].low > pi_l) { if(k < i) strict_left = true; else strict_right = true; }
+      }
+      if(is_low && (strict_left || strict_right))
+      {
+         if(_g_n_swings < 400)
+         {
+            _g_swing_px[_g_n_swings]   = pi_l;
+            _g_swing_kind[_g_n_swings] = 0;
+            _g_n_swings++;
+         }
+      }
+   }
+}
+
+// Apply min-swing-size filter: keep a swing only if it represents a move
+// of >= min_swing from the most recent OPPOSITE-kind swing.
+// Writes the filtered set into out_px[], out_kind[], returns count.
+int _MG_FilterMinSwing(double &out_px[], int &out_kind[], double min_swing)
+{
+   double last_high = -1.0, last_low = -1.0;
+   int n_out = 0;
+   for(int i = 0; i < _g_n_swings; i++)
+   {
+      double p = _g_swing_px[i];
+      int k = _g_swing_kind[i];
+      bool ok = false;
+      if(k == 1)         // HIGH: must be >= last_low + min_swing
+      {
+         if(last_low < 0 || (p - last_low) >= min_swing) ok = true;
+      }
+      else                // LOW:  must be <= last_high - min_swing
+      {
+         if(last_high < 0 || (last_high - p) >= min_swing) ok = true;
+      }
+      if(ok)
+      {
+         out_px[n_out]   = p;
+         out_kind[n_out] = k;
+         n_out++;
+         if(k == 1) last_high = p; else last_low = p;
+      }
+   }
+   return n_out;
+}
+
+// Greedy 1-D price clustering. `prices` sorted ascending; merge runs whose
+// adjacent gap <= bandwidth. Writes centers + touch counts.
+//
+// Caller MUST pass out arrays sized >= cap. We accumulate up to `cap`
+// clusters; once cap is reached, additional clusters are dropped silently
+// (after sorting we'd discard them anyway as we only return MAX_LEVELS).
+// Returns the final cluster count clipped to MG_SR_MAX_LEVELS.
+int _MG_ClusterLevels(double &prices[], int n, double bandwidth,
+                      double &out_centers[], int &out_strengths[], int cap)
+{
+   if(n == 0) return 0;
+   ArraySort(prices);
+   double cluster_sum = prices[0];
+   int    cluster_cnt = 1;
+   double cluster_last = prices[0];
+   int n_clusters = 0;
+   for(int i = 1; i < n; i++)
+   {
+      if(prices[i] - cluster_last <= bandwidth)
+      {
+         cluster_sum += prices[i];
+         cluster_cnt++;
+         cluster_last = prices[i];
+      }
+      else
+      {
+         if(n_clusters < cap)
+         {
+            out_centers[n_clusters]    = cluster_sum / cluster_cnt;
+            out_strengths[n_clusters]  = cluster_cnt;
+            n_clusters++;
+         }
+         cluster_sum  = prices[i];
+         cluster_cnt  = 1;
+         cluster_last = prices[i];
+      }
+   }
+   if(n_clusters < cap)
+   {
+      out_centers[n_clusters]   = cluster_sum / cluster_cnt;
+      out_strengths[n_clusters] = cluster_cnt;
+      n_clusters++;
+   }
+   // sort clusters by strength DESC (insertion sort - n is small)
+   for(int i = 1; i < n_clusters; i++)
+   {
+      double cv = out_centers[i]; int sv = out_strengths[i];
+      int j = i - 1;
+      while(j >= 0 && out_strengths[j] < sv)
+      {
+         out_centers[j+1] = out_centers[j];
+         out_strengths[j+1] = out_strengths[j];
+         j--;
+      }
+      out_centers[j+1] = cv;
+      out_strengths[j+1] = sv;
+   }
+   return MathMin(n_clusters, MG_SR_MAX_LEVELS);
+}
+
+// Build the 6 sr_fib features at the current closed M5 bar.
+// f_out gets [dist_sup, dist_res, sup_str, res_str, dist_fib, in_zone].
+// Returns false on insufficient history.
+bool _MG_BuildSrFibFeatures(double cur, double atr14, float &f_out[])
+{
+   ArrayResize(f_out, MG_N_SR_FIB);
+   for(int i = 0; i < MG_N_SR_FIB; i++) f_out[i] = (float)MG_SR_DIST_CAP_ATR;
+   f_out[2] = 0.0f;  // strengths default 0
+   f_out[3] = 0.0f;
+   f_out[5] = 0.0f;  // in_zone default 0
+
+   if(atr14 <= 1e-9) return false;
+
+   // pull H1 closed bars (shift 1 -> last closed bar is index N-1)
+   MqlRates h1[];
+   int got = CopyRates(_Symbol, PERIOD_H1, 1, MG_SR_H1_PULL, h1);
+   if(got < MG_SR_LOOKBACK_H + MG_SR_SWING_N + 1) return false;
+
+   _MG_DetectSwings(h1, MG_SR_SWING_N);
+   if(_g_n_swings == 0) return false;
+
+   // apply min-swing filter (causal order: process by detection order)
+   double filt_px[400]; int filt_kind[400];
+   int n_filt = _MG_FilterMinSwing(filt_px, filt_kind, MG_SR_MIN_SWING_USD);
+   if(n_filt == 0) return false;
+
+   // separate sups (lows) and ress (highs)
+   double sup_arr[400], res_arr[400];
+   int n_sup = 0, n_res = 0;
+   for(int i = 0; i < n_filt; i++)
+   {
+      if(filt_kind[i] == 0) { sup_arr[n_sup++] = filt_px[i]; }
+      else                  { res_arr[n_res++] = filt_px[i]; }
+   }
+
+   // Arrays sized 128 - safe upper bound. We had OOB with size 16 because
+   // 100+ swings spread over 30-pip bands can produce 30+ raw clusters
+   // before the MAX_LEVELS=6 trim. The cluster function caps writes at 128
+   // and we only consume the top MAX_LEVELS by strength after sort.
+   double sup_centers[128]; int sup_strengths[128];
+   double res_centers[128]; int res_strengths[128];
+   int n_sup_lv = _MG_ClusterLevels(sup_arr, n_sup, MG_SR_CLUSTER_USD,
+                                    sup_centers, sup_strengths, 128);
+   int n_res_lv = _MG_ClusterLevels(res_arr, n_res, MG_SR_CLUSTER_USD,
+                                    res_centers, res_strengths, 128);
+
+   // nearest support BELOW current (highest such)
+   double best_sup_c = -1.0; int best_sup_s = 0;
+   for(int i = 0; i < n_sup_lv; i++)
+   {
+      if(sup_centers[i] < cur && sup_centers[i] > best_sup_c)
+      {
+         best_sup_c = sup_centers[i];
+         best_sup_s = sup_strengths[i];
+      }
+   }
+   if(best_sup_c > 0)
+   {
+      double d = (cur - best_sup_c) / atr14;
+      if(d > MG_SR_DIST_CAP_ATR) d = MG_SR_DIST_CAP_ATR;
+      f_out[0] = (float)d;
+      f_out[2] = (float)best_sup_s;
+   }
+
+   // nearest resistance ABOVE current (lowest such)
+   double best_res_c = 1e18; int best_res_s = 0;
+   for(int i = 0; i < n_res_lv; i++)
+   {
+      if(res_centers[i] > cur && res_centers[i] < best_res_c)
+      {
+         best_res_c = res_centers[i];
+         best_res_s = res_strengths[i];
+      }
+   }
+   if(best_res_c < 1e17)
+   {
+      double d = (best_res_c - cur) / atr14;
+      if(d > MG_SR_DIST_CAP_ATR) d = MG_SR_DIST_CAP_ATR;
+      f_out[1] = (float)d;
+      f_out[3] = (float)best_res_s;
+   }
+
+   // Fibonacci on the most recent valid swing pair (>= MIN_SWING_USD)
+   if(n_filt >= 2)
+   {
+      double p_last = filt_px[n_filt - 1];
+      int    k_last = filt_kind[n_filt - 1];
+      double p_prev = filt_px[n_filt - 2];
+      int    k_prev = filt_kind[n_filt - 2];
+      if(k_last != k_prev && MathAbs(p_last - p_prev) >= MG_SR_MIN_SWING_USD)
+      {
+         double lo = MathMin(p_last, p_prev);
+         double hi = MathMax(p_last, p_prev);
+         double rng = hi - lo;
+         double fibs[5];
+         fibs[0] = lo + 0.236 * rng;
+         fibs[1] = lo + 0.382 * rng;
+         fibs[2] = lo + 0.500 * rng;
+         fibs[3] = lo + 0.618 * rng;
+         fibs[4] = lo + 0.786 * rng;
+         double fib_dist = 1e18;
+         for(int i = 0; i < 5; i++)
+         {
+            double d = MathAbs(cur - fibs[i]);
+            if(d < fib_dist) fib_dist = d;
+         }
+         double fd = fib_dist / atr14;
+         if(fd > MG_SR_DIST_CAP_ATR) fd = MG_SR_DIST_CAP_ATR;
+         f_out[4] = (float)fd;
+      }
+   }
+
+   // in_sr_zone: nearest of the 3 distance features <= ZONE_ATR
+   double nearest = MathMin(MathMin((double)f_out[0], (double)f_out[1]),
+                            (double)f_out[4]);
+   f_out[5] = (nearest <= MG_SR_ZONE_ATR) ? 1.0f : 0.0f;
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Build the meta-gate feature vector (18 base + optional 4 tspulse  |
+//| OR 6 sr_fib). CLOSED bars only (shift 1).                          |
+//| Mirrors python/aurum/metatrend.py::build_features (+ extras).      |
 //+------------------------------------------------------------------+
 bool MG_BuildFeatures(float &f[])
 {
@@ -464,12 +767,20 @@ bool MG_BuildFeatures(float &f[])
    f[16]=(float)hod_sin;       f[17]=(float)hod_cos;
 
    // --- append tspulse scalars if running the 22-feature variant ---
-   if(g_mg_nfeat == MG_N_MAX)
+   if(g_mg_nfeat == MG_N_TSP_MODE)
    {
       if(n < MG_TSP_CTX) return false;       // need 512 closed bars
       float ts[];  ArrayResize(ts, MG_N_TSPULSE);
       if(!_MG_TspulseFeatures(cls, last, ts)) return false;
       f[18] = ts[0]; f[19] = ts[1]; f[20] = ts[2]; f[21] = ts[3];
+   }
+   // --- append sr_fib features if running the 24-feature variant (v1.30) -
+   else if(g_mg_nfeat == MG_N_SR_MODE)
+   {
+      float sr[];  ArrayResize(sr, MG_N_SR_FIB);
+      if(!_MG_BuildSrFibFeatures(c, atr14, sr)) return false;
+      f[18] = sr[0]; f[19] = sr[1]; f[20] = sr[2];
+      f[21] = sr[3]; f[22] = sr[4]; f[23] = sr[5];
    }
    return true;
 }

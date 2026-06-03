@@ -58,6 +58,16 @@ input bool   InpExitOnFlip      = true;
 // --- pyramiding ----------------------------------------------------
 input int    InpMaxStack        = 3;
 input double InpStackStepAtr    = 1.0;
+// --- cost hygiene filters (v1.40) ----------------------------------
+// Address the failure mode where +42% trades at thr=0.50 ate the edge to
+// real broker spread. These filters skip ENTRIES (don't affect open
+// positions) when current cost conditions are unfavourable.
+input double InpMaxSpreadPoints = 0.0;     // 0 = OFF. Skip entry if current spread (in points) > this. GOLD: try 50 (= $0.50).
+input bool   InpSkipAsiaSession = false;   // skip 22:00 - 06:00 UTC (low liquidity, wider spreads)
+input int    InpAsiaStartHour   = 22;
+input int    InpAsiaEndHour     = 6;
+input bool   InpSkipFridayLate  = false;   // skip Friday 18:00 UTC onwards (weekend gap risk)
+input int    InpFridayCutoffHour= 18;
 // --- quantile gate (v1.20) -----------------------------------------
 // Default OFF: A/B-tested 2026-05-21, the quantile-driven dynamic SL widens
 // stops on losing trades and burns 14.5% of the validated edge. The 7 ONNX
@@ -470,6 +480,45 @@ void OnTick()
    {
       if(InpVerboseLog) Print("[MetaTrend] q50 disagrees with primary - skipping");
       return;
+   }
+
+   // === cost-hygiene filters (v1.40) ===
+   // 1) Spread filter - skip if broker is currently quoting expensive
+   if(InpMaxSpreadPoints > 0)
+   {
+      double pt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double spread_pts = (pt > 0) ? (ask - bid) / pt : 0;
+      if(spread_pts > InpMaxSpreadPoints)
+      {
+         if(InpVerboseLog)
+            PrintFormat("[MetaTrend] spread=%.0fpt > limit %.0fpt - skipping entry",
+                        spread_pts, InpMaxSpreadPoints);
+         return;
+      }
+   }
+   // 2) Session filter - skip thin-liquidity hours
+   if(InpSkipAsiaSession || InpSkipFridayLate)
+   {
+      MqlDateTime now;
+      TimeToStruct(TimeCurrent(), now);
+      if(InpSkipAsiaSession)
+      {
+         bool in_asia = (InpAsiaStartHour < InpAsiaEndHour)
+            ? (now.hour >= InpAsiaStartHour && now.hour < InpAsiaEndHour)
+            : (now.hour >= InpAsiaStartHour || now.hour < InpAsiaEndHour);
+         if(in_asia)
+         {
+            if(InpVerboseLog) Print("[MetaTrend] Asia-session skip");
+            return;
+         }
+      }
+      if(InpSkipFridayLate && now.day_of_week == 5 && now.hour >= InpFridayCutoffHour)
+      {
+         if(InpVerboseLog) Print("[MetaTrend] Friday-late skip (weekend gap risk)");
+         return;
+      }
    }
 
    int cnt = _PosCount();
