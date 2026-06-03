@@ -85,6 +85,7 @@ class Position:
     lot:         float
     sl:          float
     atr_at_open: float
+    spread_pts_at_open: float = -1.0   # -1 = use flat fallback
     breakeven_done: bool = False
 
 
@@ -204,6 +205,13 @@ def load_m5_data(path: Path) -> pd.DataFrame:
         raise ValueError(
             f"could not find OHLC columns in {path.name}. "
             f"Found: {list(df.columns)}")
+    # MT5 HST exports include a <SPREAD> column in POINTS (typically 1 point
+    # = 0.01 USD for GOLD). Carry it through if present so callers can build
+    # a per-bar variable-spread cost model instead of a flat assumption.
+    spread_aliases = ["spread", "spread_points"]
+    c_spread = _find(spread_aliases)
+    if c_spread:
+        df = df.rename(columns={c_spread: "spread"})
     # Combine date + time if separate, otherwise use whichever is present
     if c_time and c_date and c_time != c_date:
         # MetaTrader HST format: <DATE>=YYYY.MM.DD, <TIME>=HH:MM
@@ -224,21 +232,26 @@ def load_m5_data(path: Path) -> pd.DataFrame:
     df = df.sort_values("time").reset_index(drop=True)
     log.info("[backtest] loaded %d bars  %s -> %s",
              len(df), df["time"].iloc[0], df["time"].iloc[-1])
+    if "spread" in df.columns:
+        log.info("[backtest] data includes <SPREAD> column: median=%.1f pts, mean=%.1f pts",
+                 float(df["spread"].median()), float(df["spread"].mean()))
 
     # Detect granularity - resample to M5 if needed
     if len(df) > 1:
         dt = (df["time"].iloc[1] - df["time"].iloc[0]).total_seconds()
         if abs(dt - 300) > 60:
-            # not M5 - try to resample
-            log.info("[backtest] data is %.0fs cadence, resampling to M5",
-                     dt)
+            log.info("[backtest] data is %.0fs cadence, resampling to M5", dt)
+            agg = {"open": ("open", "first"), "high": ("high", "max"),
+                   "low": ("low", "min"),     "close": ("close", "last")}
+            if "spread" in df.columns:
+                agg["spread"] = ("spread", "mean")
             g = df.set_index("time")
-            df = g.resample("5min", label="left", closed="left").agg(
-                open=("open", "first"), high=("high", "max"),
-                low=("low", "min"), close=("close", "last"),
-            ).dropna(subset=["close"]).reset_index()
+            df = g.resample("5min", label="left", closed="left").agg(**agg) \
+                  .dropna(subset=["close"]).reset_index()
             log.info("[backtest] after resample: %d M5 bars", len(df))
-    return df[["time", "open", "high", "low", "close"]]
+    keep_cols = ["time", "open", "high", "low", "close"]
+    if "spread" in df.columns: keep_cols.append("spread")
+    return df[keep_cols]
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +315,23 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
     equity_curve = np.zeros(n, dtype=np.float64)
 
     inp = inputs
-    cost_per_lot = inp["spread_usd"] * inp["contract_size"]  # USD per 1 lot round-trip
+    # Cost model:
+    #   - If `use_variable_spread=True` AND the data has a `spread` column,
+    #     use per-bar broker spread in points. 1 point = 0.01 USD on GOLD.
+    #     Cost per round-trip = spread_at_open * 0.01 * lot * contract_size
+    #     (in points → USD-per-unit → USD-per-lot).
+    #   - Otherwise fall back to the flat `spread_usd` assumption (the
+    #     original behaviour). spread_usd is the round-trip cost in price
+    #     units, multiplied by lot*contract_size to get USD.
+    use_variable = bool(inp.get("use_variable_spread", False)) and ("spread" in m5.columns)
+    if use_variable:
+        spread_pts = m5["spread"].fillna(0).to_numpy(np.float64)
+        log.info("[backtest] cost model: per-bar variable (mean spread %.1f pts)",
+                 float(spread_pts.mean()))
+    else:
+        log.info("[backtest] cost model: flat spread_usd=$%.3f round-trip",
+                 inp["spread_usd"])
+    cost_per_lot = inp["spread_usd"] * inp["contract_size"]  # flat fallback
 
     # The first ~max(EMA200, sr_warmup) bars are warmup
     sr_warmup = (24 * 21 * 12) if use_sr else 0
@@ -366,7 +395,8 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
                 # adverse extreme reached first - test SL against ORIGINAL sl
                 if check_sl_hit():
                     _close_position(open_pos, open_pos.sl, m5["time"].iloc[i],
-                                    "sl", inp, cost_per_lot, trades)
+                                    "sl", inp, cost_per_lot, trades,
+                                    open_pos.spread_pts_at_open)
                     equity += trades[-1].pnl
                     open_pos = None
                 else:
@@ -377,7 +407,8 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
                 update_trail_be(fav)
                 if check_sl_hit():
                     _close_position(open_pos, open_pos.sl, m5["time"].iloc[i],
-                                    "sl", inp, cost_per_lot, trades)
+                                    "sl", inp, cost_per_lot, trades,
+                                    open_pos.spread_pts_at_open)
                     equity += trades[-1].pnl
                     open_pos = None
 
@@ -385,14 +416,16 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
             if open_pos is not None and inp["exit_on_flip"] \
                and prim[i] != 0 and prim[i] != open_pos.side:
                 _close_position(open_pos, cur_close, m5["time"].iloc[i],
-                                "flip", inp, cost_per_lot, trades)
+                                "flip", inp, cost_per_lot, trades,
+                                open_pos.spread_pts_at_open)
                 equity += trades[-1].pnl
                 open_pos = None
 
             # timeout
             if open_pos is not None and (i - open_pos.open_idx) >= inp["max_hold_bars"]:
                 _close_position(open_pos, cur_close, m5["time"].iloc[i],
-                                "timeout", inp, cost_per_lot, trades)
+                                "timeout", inp, cost_per_lot, trades,
+                                open_pos.spread_pts_at_open)
                 equity += trades[-1].pnl
                 open_pos = None
 
@@ -404,6 +437,7 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
                  else (entry_price + sl_dist)
             open_pos = Position(
                 open_idx    = i,
+                spread_pts_at_open = (float(spread_pts[i]) if use_variable else -1.0),
                 open_time   = m5["time"].iloc[i],
                 open_price  = entry_price,
                 side        = int(prim[i]),
@@ -430,7 +464,8 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
     # close any open position at last bar
     if open_pos is not None:
         _close_position(open_pos, closes[-1], m5["time"].iloc[-1],
-                        "end-of-data", inp, cost_per_lot, trades)
+                        "end-of-data", inp, cost_per_lot, trades,
+                        open_pos.spread_pts_at_open)
         equity += trades[-1].pnl
         equity_curve[-1] = equity
 
@@ -471,10 +506,16 @@ def _floating_pnl(pos: Optional[Position], cur_close: float, inp: dict) -> float
 
 def _close_position(pos: Position, exit_price: float, exit_time: pd.Timestamp,
                     reason: str, inp: dict, cost_per_lot: float,
-                    trades: list):
+                    trades: list, spread_pts_at_open: float = -1.0):
     move = (exit_price - pos.open_price) * pos.side
     raw_pnl = move * pos.lot * inp["contract_size"]
-    cost = cost_per_lot * pos.lot
+    if spread_pts_at_open >= 0:
+        # variable cost: spread in POINTS at open time. 1 point = 0.01 USD on GOLD
+        # (configurable via inp["point_value_usd"], default 0.01)
+        pt_val = inp.get("point_value_usd", 0.01)
+        cost = spread_pts_at_open * pt_val * pos.lot * inp["contract_size"]
+    else:
+        cost = cost_per_lot * pos.lot
     net = raw_pnl - cost
     trades.append(ClosedTrade(
         open_time   = pos.open_time,
