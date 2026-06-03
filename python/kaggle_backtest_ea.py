@@ -153,18 +153,37 @@ def load_m5_data(path: Path) -> pd.DataFrame:
     """
     Load OHLC data from CSV/parquet, normalise to expected schema:
         columns = ['time', 'open', 'high', 'low', 'close']  (volume optional)
-    Tries common Kaggle XAUUSD column-name variants.
+    Handles:
+      - comma-separated CSV (standard)
+      - tab-separated CSV (MetaTrader HST export)
+      - column names wrapped in `<>` brackets like `<DATE>`, `<OPEN>`
+      - separate `date` + `time` columns vs single `datetime` column
+      - parquet files
     """
     if path.suffix.lower() == ".parquet":
         df = pd.read_parquet(path)
     else:
-        df = pd.read_csv(path)
+        # Detect separator: peek at first non-empty line
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            first_line = ""
+            for line in f:
+                if line.strip():
+                    first_line = line
+                    break
+        n_tabs   = first_line.count("\t")
+        n_commas = first_line.count(",")
+        sep = "\t" if n_tabs > n_commas else ","
+        log.info("[backtest] detected separator: %s (tabs=%d, commas=%d)",
+                 "TAB" if sep == "\t" else "COMMA", n_tabs, n_commas)
+        df = pd.read_csv(path, sep=sep)
 
-    # Lowercase columns + strip whitespace
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    # Normalise column names: strip <>, lowercase, strip whitespace + underscores
+    df.columns = [str(c).strip().lower().lstrip("<").rstrip(">").strip("_ ")
+                  for c in df.columns]
 
-    # Common Kaggle XAUUSD column variants we need to map
-    time_aliases  = ["time", "date", "datetime", "timestamp", "date_time"]
+    # Common alias map
+    time_aliases  = ["time", "datetime", "timestamp", "date_time", "datetime_utc"]
+    date_aliases  = ["date"]
     open_aliases  = ["open", "o"]
     high_aliases  = ["high", "h"]
     low_aliases   = ["low", "l"]
@@ -172,33 +191,34 @@ def load_m5_data(path: Path) -> pd.DataFrame:
 
     def _find(aliases):
         for a in aliases:
-            if a in df.columns:
-                return a
+            if a in df.columns: return a
         return None
 
     c_time  = _find(time_aliases)
+    c_date  = _find(date_aliases)
     c_open  = _find(open_aliases)
     c_high  = _find(high_aliases)
     c_low   = _find(low_aliases)
     c_close = _find(close_aliases)
-    if None in (c_time, c_open, c_high, c_low, c_close):
+    if None in (c_open, c_high, c_low, c_close):
         raise ValueError(
-            f"could not find OHLC+time columns in {path.name}. "
+            f"could not find OHLC columns in {path.name}. "
             f"Found: {list(df.columns)}")
-    df = df.rename(columns={c_time: "time", c_open: "open", c_high: "high",
-                             c_low: "low", c_close: "close"})
-
-    # Some Kaggle XAUUSD files split date and time
-    if "time" in df.columns and "date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["time"]):
-        if df["time"].astype(str).str.contains(":").any():
-            # combined or separate? try combining
-            df["time"] = pd.to_datetime(df["date"].astype(str) + " "
-                                         + df["time"].astype(str),
-                                         errors="coerce", utc=True)
-        else:
-            df["time"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
+    # Combine date + time if separate, otherwise use whichever is present
+    if c_time and c_date and c_time != c_date:
+        # MetaTrader HST format: <DATE>=YYYY.MM.DD, <TIME>=HH:MM
+        df["time"] = pd.to_datetime(df[c_date].astype(str) + " "
+                                     + df[c_time].astype(str),
+                                     errors="coerce", utc=True)
+    elif c_time:
+        df["time"] = pd.to_datetime(df[c_time], errors="coerce", utc=True)
+    elif c_date:
+        df["time"] = pd.to_datetime(df[c_date], errors="coerce", utc=True)
     else:
-        df["time"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
+        raise ValueError(
+            f"no time/date column in {path.name}. Found: {list(df.columns)}")
+    df = df.rename(columns={c_open: "open", c_high: "high",
+                             c_low: "low", c_close: "close"})
 
     df = df.dropna(subset=["time", "open", "high", "low", "close"])
     df = df.sort_values("time").reset_index(drop=True)
