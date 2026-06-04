@@ -70,6 +70,11 @@ DEFAULT_INPUTS = dict(
     stack_step_atr     = 1.0,
     spread_usd         = 0.40,       # round-trip cost in price units
     contract_size      = 100.0,      # 1 lot = 100 oz GOLD on most brokers
+    # --- cost hygiene filters (mirror EA v1.40 inputs) ---
+    max_spread_points  = 0.0,        # 0 = OFF. Skip entry if bar spread > N points.
+    skip_asia_session  = False,      # skip 22:00-06:00 UTC entries
+    asia_start_hour    = 22,
+    asia_end_hour      = 6,
 )
 
 
@@ -337,6 +342,10 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
     sr_warmup = (24 * 21 * 12) if use_sr else 0
     start_i = max(EMA_SLOW + 50, sr_warmup + 1, ATR_PERIOD)
 
+    # filter-skip counters (use 1-element list so the inner closures can mutate)
+    spread_filter_skips  = [0]
+    session_filter_skips = [0]
+
     for i in range(start_i, n - 1):
         cur_close = closes[i]
         cur_atr = atr[i]
@@ -431,6 +440,24 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
 
         # === entry decision (only on closed-bar basis) ===
         if open_pos is None and prim[i] != 0 and pact[i] >= act_thr:
+            # --- cost-hygiene filters (mirror EA v1.40) ---
+            # 1) spread filter: skip entry if current bar's broker spread > limit
+            if inp["max_spread_points"] > 0 and "spread" in m5.columns:
+                bar_spread = float(m5["spread"].iloc[i])
+                if bar_spread > inp["max_spread_points"]:
+                    spread_filter_skips[0] += 1
+                    equity_curve[i] = equity + _floating_pnl(open_pos, cur_close, inp)
+                    continue
+            # 2) Asia-session filter: skip thin-liquidity hours
+            if inp["skip_asia_session"]:
+                h = m5["time"].iloc[i].hour
+                start_h = inp["asia_start_hour"]; end_h = inp["asia_end_hour"]
+                in_asia = (h >= start_h or h < end_h) if start_h > end_h \
+                          else (h >= start_h and h < end_h)
+                if in_asia:
+                    session_filter_skips[0] += 1
+                    equity_curve[i] = equity + _floating_pnl(open_pos, cur_close, inp)
+                    continue
             sl_dist = inp["sl_atr"] * cur_atr
             entry_price = cur_close
             sl = (entry_price - sl_dist) if prim[i] > 0 \
@@ -490,6 +517,8 @@ def run_backtest(m5: pd.DataFrame, sess, in_name, spec: dict,
         max_dd_pct     = round(float(max_dd_pct), 2),
         n_bars         = int(n),
         n_active_bars  = int(n - start_i),
+        spread_filter_skips  = int(spread_filter_skips[0]),
+        session_filter_skips = int(session_filter_skips[0]),
     )
     return dict(
         summary       = summary,

@@ -13,8 +13,17 @@ TO_DATE              = None        # e.g. '2020-12-31', or None for latest
 DEPOSIT              = 10000.0
 LOT                  = 0.01
 MAX_STACK            = 1           # 1 = no pyramiding (matches Tester baseline)
-USE_VARIABLE_SPREAD  = True        # use per-bar <SPREAD> from MT5 HST data
-SPREAD_USD           = 0.05        # fallback flat cost if no spread column
+
+# Cost model
+USE_VARIABLE_SPREAD  = False       # False = flat SPREAD_USD; True = per-bar <SPREAD>
+SPREAD_USD           = 0.29        # flat round-trip USD (0.29 ~ AvaTrade live median)
+
+# Cost-hygiene filters (mirror EA v1.40 inputs; default OFF for clean baseline)
+MAX_SPREAD_POINTS    = 0           # 0 = OFF. Skip entry if bar spread > N points
+SKIP_ASIA_SESSION    = False       # skip 22:00-06:00 UTC entries (thin liquidity)
+
+# A/B mode: run all 4 filter combinations in one go (15-25 min each, ~1-1.5h total)
+RUN_AB_SUITE         = False       # True = ignore the singular params above, run a 2x2 suite
 # =========================================================================
 
 import os, sys, subprocess, re, logging
@@ -89,25 +98,59 @@ sess, in_name, spec = load_meta_gate(
     Path(REPO + '/onnx_out/M4GOLD_METATREND_GOLD_spec.json'))
 print(f'      meta-gate: {spec.get("version")}  n_features={spec["n_features"]}  thr={spec["act_threshold"]}  CV_PF={spec["cv"]["meta_mean_pf"]}')
 
-# --- 4/4: run the backtest ---
-inputs = dict(DEFAULT_INPUTS)
-inputs.update(dict(base_lot=LOT, spread_usd=SPREAD_USD,
-                   use_variable_spread=USE_VARIABLE_SPREAD, max_stack=MAX_STACK))
-est_min = (len(m5) // 60000) + 1
-print(f'[4/4] running backtest (~{est_min} min estimated for {len(m5):,} bars)')
-t0 = datetime.now()
-results = run_backtest(m5, sess, in_name, spec, inputs, deposit=DEPOSIT, verbose=True)
-print(f'      elapsed: {(datetime.now()-t0).total_seconds():.0f}s')
+# --- 4/4: run the backtest(s) ---
+def _do_run(label, overrides):
+    inputs = dict(DEFAULT_INPUTS)
+    inputs.update(dict(base_lot=LOT, max_stack=MAX_STACK,
+                        spread_usd=SPREAD_USD, use_variable_spread=USE_VARIABLE_SPREAD,
+                        max_spread_points=MAX_SPREAD_POINTS,
+                        skip_asia_session=SKIP_ASIA_SESSION))
+    inputs.update(overrides)
+    print(f'\n  -- run [{label}] -- overrides: {overrides}')
+    t0 = datetime.now()
+    r = run_backtest(m5, sess, in_name, spec, inputs, deposit=DEPOSIT, verbose=False)
+    elapsed = (datetime.now()-t0).total_seconds()
+    s = r['summary']
+    print(f'    elapsed {elapsed:.0f}s  -  '
+          f'final ${s["final_equity"]:,.0f}  ({s["return_pct"]:+.2f}%)  PF {s["profit_factor"]}  '
+          f'{s["n_trades"]} trades  WR {s["win_rate_pct"]:.1f}%  DD {s["max_dd_pct"]:.1f}%  '
+          f'skipped spread={s["spread_filter_skips"]} session={s["session_filter_skips"]}')
+    return label, r
 
-s = results['summary']
-print()
-print('=' * 72)
-print(f'  RESULT  -  v1.30 on {len(m5):,} bars  ({m5["time"].iloc[0].date()} -> {m5["time"].iloc[-1].date()})')
-print('=' * 72)
-for k, v in s.items():
-    print(f'  {k:18}: {v}')
-print('=' * 72)
-print(f'  Reminder: Python ~5pp more optimistic than MT5 Tester (no per-bar slippage).')
+est_min = (len(m5) // 60000) + 1
+if RUN_AB_SUITE:
+    print(f'[4/4] A/B suite: 4 runs * ~{est_min} min each (~{est_min*4} min total)')
+    ab_results = [
+        _do_run('A: baseline',         dict(max_spread_points=0,  skip_asia_session=False)),
+        _do_run('B: spread<=50',       dict(max_spread_points=50, skip_asia_session=False)),
+        _do_run('C: skip Asia',        dict(max_spread_points=0,  skip_asia_session=True)),
+        _do_run('D: spread + Asia',    dict(max_spread_points=50, skip_asia_session=True)),
+    ]
+    results = ab_results[0][1]   # keep first run results for Cell 2 plotting
+    print()
+    print('=' * 100)
+    print(f'  A/B SUITE  -  v1.30 on {len(m5):,} bars  ({m5["time"].iloc[0].date()} -> {m5["time"].iloc[-1].date()})')
+    print('=' * 100)
+    print(f'  {"run":24} {"final $":>12} {"return%":>9} {"PF":>6} {"trades":>8} {"WR%":>6} {"DD%":>6}')
+    print('  ' + '-' * 78)
+    for lbl, r in ab_results:
+        s = r['summary']
+        print(f'  {lbl:24} {s["final_equity"]:>12,.0f} {s["return_pct"]:>+9.2f} '
+              f'{s["profit_factor"]:>6.3f} {s["n_trades"]:>8} {s["win_rate_pct"]:>6.1f} {s["max_dd_pct"]:>6.1f}')
+    print('=' * 100)
+    print(f'  Reminder: Python ~5pp more optimistic than MT5 Tester (no per-bar slippage).')
+else:
+    print(f'[4/4] single run (~{est_min} min)')
+    _, results = _do_run('single', {})
+    s = results['summary']
+    print()
+    print('=' * 72)
+    print(f'  RESULT  -  v1.30 on {len(m5):,} bars  ({m5["time"].iloc[0].date()} -> {m5["time"].iloc[-1].date()})')
+    print('=' * 72)
+    for k, v in s.items():
+        print(f'  {k:22}: {v}')
+    print('=' * 72)
+    print(f'  Reminder: Python ~5pp more optimistic than MT5 Tester (no per-bar slippage).')
 '''
 
 CELL2_SOURCE = r'''# Run AFTER Cell 1 completes - equity curve, per-year, exit reasons, stress folds
