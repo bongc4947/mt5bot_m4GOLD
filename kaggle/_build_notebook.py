@@ -22,15 +22,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 
-# --- 1/4: install deps + force-sync the repo ---
+# --- 1/4: install deps + force-FRESH-clone the repo ---
+# Always nuke and re-clone. Previously tried fetch+reset --hard origin/master
+# but the shallow clone's tracking refs can vary (origin/main vs origin/master
+# depending on when/how it was cloned), causing exit 128 on the reset. Fresh
+# clone is small (~5 MB) and trivially fast - the most robust option.
 subprocess.run(['pip', 'install', '-q', 'onnxruntime'], check=True)
+import shutil
 REPO    = '/kaggle/working/mt5bot_m4GOLD'
 GIT_URL = 'https://github.com/bongc4947/mt5bot_m4GOLD.git'
 if os.path.isdir(REPO):
-    subprocess.run(['git', '-C', REPO, 'fetch', 'origin', '--depth', '1'], check=True, capture_output=True)
-    subprocess.run(['git', '-C', REPO, 'reset', '--hard', 'origin/master'], check=True, capture_output=True)
-else:
-    subprocess.run(['git', 'clone', '--depth', '1', GIT_URL, REPO], check=True, capture_output=True)
+    shutil.rmtree(REPO)
+subprocess.run(['git', 'clone', '--depth', '1', GIT_URL, REPO],
+               check=True, capture_output=True)
 
 head_hash    = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
 head_ts_unix = int(subprocess.run(['git', '-C', REPO, 'log', '-1', '--format=%ct', 'HEAD'], capture_output=True, text=True).stdout.strip())
